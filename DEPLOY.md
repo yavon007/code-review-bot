@@ -96,7 +96,7 @@ REVIEW_MODEL=你的可用模型
 
 ## 4. 启动应用服务
 
-`docker-compose.prod.yml` 只包含应用服务，不包含数据库。这样每次发布不会影响数据服务。应用启动时会等待数据库最多 60 秒，避免数据库刚启动时连接失败。
+`docker-compose.prod.yml` 只包含应用服务，不包含数据库。这样每次发布不会影响数据服务。应用启动时会等待数据库最多 60 秒，随后按 `internal/db/migrations/*.sql` 自动执行未应用的 migration，并记录到 `schema_migrations` 表。
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build

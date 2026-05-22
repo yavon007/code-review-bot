@@ -99,7 +99,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]Job, error) {
 	}
 	defer rows.Close()
 
-	var result []Job
+	result := make([]Job, 0)
 	for rows.Next() {
 		job, err := scanJob(rows)
 		if err != nil {

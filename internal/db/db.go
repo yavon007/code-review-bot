@@ -3,10 +3,18 @@ package db
 import (
 	"context"
 	"database/sql"
+	"embed"
+	"fmt"
+	"io/fs"
+	"sort"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
 
 func Open(ctx context.Context, databaseURL string) (*sql.DB, error) {
 	database, err := sql.Open("pgx", databaseURL)
@@ -25,72 +33,89 @@ func Open(ctx context.Context, databaseURL string) (*sql.DB, error) {
 }
 
 func Migrate(ctx context.Context, database *sql.DB) error {
-	_, err := database.ExecContext(ctx, schemaSQL)
+	if err := ensureMigrationTable(ctx, database); err != nil {
+		return err
+	}
+
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		return err
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+
+		version, err := migrationVersion(entry.Name())
+		if err != nil {
+			return err
+		}
+
+		applied, err := isMigrationApplied(ctx, database, version)
+		if err != nil {
+			return err
+		}
+		if applied {
+			continue
+		}
+
+		sqlBytes, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			return err
+		}
+		if err := applyMigration(ctx, database, version, entry.Name(), string(sqlBytes)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ensureMigrationTable(ctx context.Context, database *sql.DB) error {
+	_, err := database.ExecContext(ctx, `
+		create table if not exists schema_migrations (
+			version text primary key,
+			name text not null,
+			applied_at timestamptz not null default now()
+		)
+	`)
 	return err
 }
 
-const schemaSQL = `
-create table if not exists webhook_deliveries (
-  id bigserial primary key,
-  delivery_id text not null unique,
-  event_name text not null,
-  repo_full_name text not null,
-  pr_number int,
-  head_sha text,
-  signature_valid boolean not null,
-  received_at timestamptz not null default now()
-);
+func migrationVersion(name string) (string, error) {
+	version, _, ok := strings.Cut(name, "_")
+	if !ok || version == "" {
+		return "", fmt.Errorf("invalid migration filename %q", name)
+	}
+	return version, nil
+}
 
-create table if not exists review_jobs (
-  id bigserial primary key,
-  delivery_id text unique,
-  event_name text not null,
-  action text,
-  repo_full_name text not null,
-  owner_name text not null,
-  repo_name text not null,
-  pr_number int not null,
-  head_sha text not null,
-  base_sha text,
-  sender text,
-  status text not null,
-  status_reason text,
-  model text,
-  attempt_count int not null default 0,
-  error_message text,
-  summary text,
-  gitea_comment_id text,
-  input_tokens int,
-  output_tokens int,
-  estimated_cost numeric,
-  created_at timestamptz not null default now(),
-  queued_at timestamptz not null default now(),
-  started_at timestamptz,
-  finished_at timestamptz,
-  stale_at timestamptz,
-  unique(repo_full_name, pr_number, head_sha)
-);
+func isMigrationApplied(ctx context.Context, database *sql.DB, version string) (bool, error) {
+	var applied bool
+	err := database.QueryRowContext(ctx, `
+		select exists(select 1 from schema_migrations where version = $1)
+	`, version).Scan(&applied)
+	return applied, err
+}
 
-create index if not exists review_jobs_status_id_idx on review_jobs(status, id);
-create index if not exists review_jobs_repo_pr_idx on review_jobs(repo_full_name, pr_number, id desc);
+func applyMigration(ctx context.Context, database *sql.DB, version string, name string, sqlText string) error {
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
-create table if not exists review_findings (
-  id bigserial primary key,
-  job_id bigint not null references review_jobs(id),
-  finding_hash text not null unique,
-  path text not null,
-  side text not null,
-  line int,
-  severity text not null,
-  category text not null,
-  title text not null,
-  body text not null,
-  confidence numeric,
-  is_inline boolean not null default false,
-  is_posted boolean not null default false,
-  gitea_comment_id text,
-  gitea_comment_url text,
-  post_error text,
-  created_at timestamptz not null default now()
-);
-`
+	if _, err := tx.ExecContext(ctx, sqlText); err != nil {
+		return fmt.Errorf("apply migration %s: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		insert into schema_migrations (version, name) values ($1, $2)
+	`, version, name); err != nil {
+		return fmt.Errorf("record migration %s: %w", name, err)
+	}
+	return tx.Commit()
+}
