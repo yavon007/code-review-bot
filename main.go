@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"net/http"
 	"os"
@@ -32,6 +33,27 @@ func buildReviewer(cfg config.Config, logger *slog.Logger) review.Reviewer {
 	return reviewer
 }
 
+func openDatabaseWithRetry(ctx context.Context, databaseURL string, logger *slog.Logger) (*sql.DB, error) {
+	deadline := time.Now().Add(60 * time.Second)
+	var lastErr error
+	for {
+		database, err := db.Open(ctx, databaseURL)
+		if err == nil {
+			return database, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		logger.Warn("database is not ready; retrying", "error", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg := config.Load()
@@ -40,7 +62,7 @@ func main() {
 	var store jobs.Store = jobs.NewMemoryStore()
 	var databaseCloser func() error
 	if cfg.DatabaseURL != "" {
-		database, err := db.Open(ctx, cfg.DatabaseURL)
+		database, err := openDatabaseWithRetry(ctx, cfg.DatabaseURL, logger)
 		if err != nil {
 			logger.Error("database connection failed", "error", err)
 			os.Exit(1)

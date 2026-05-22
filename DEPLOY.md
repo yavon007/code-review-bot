@@ -65,11 +65,24 @@ nano .env.production
 必须修改：
 
 ```env
-POSTGRES_PASSWORD=改成长随机密码
+DATABASE_URL=postgres://reviewbot:数据库密码@postgres:5432/reviewbot?sslmode=disable
+POSTGRES_PASSWORD=数据库密码
 GITEA_BASE_URL=https://你的-gitea-地址
 GITEA_TOKEN=你的-gitea-token
 GITEA_WEBHOOK_SECRET=改成长随机-secret
 ```
+
+生产推荐使用独立 PostgreSQL 或已经部署好的数据库。应用发布只更新 `api` 和 `web`，不重复部署数据库。
+
+如果使用已有外部数据库，把 `DATABASE_URL` 的主机名从 `postgres` 改成真实数据库地址，并且不需要设置 `POSTGRES_PASSWORD`。
+
+如果你暂时没有现成 PostgreSQL，可以先单独启动一次数据库服务：
+
+```bash
+docker compose --env-file .env.production -f docker-compose.db.yml up -d
+```
+
+这种方式会创建名为 `code_review_bot_postgres_data` 的 Docker volume。后续发布应用时不要执行 `down -v`，否则会删除数据。
 
 如果要真实 AI review，还要填：
 
@@ -81,7 +94,9 @@ REVIEW_MODEL=你的可用模型
 
 如果 `OPENAI_API_KEY` 留空，系统会使用 mock reviewer，只适合验证 webhook、队列、Gitea status/comment 回写链路。
 
-## 4. 启动服务
+## 4. 启动应用服务
+
+`docker-compose.prod.yml` 只包含应用服务，不包含数据库。这样每次发布不会影响数据服务。应用启动时会等待数据库最多 60 秒，避免数据库刚启动时连接失败。
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
@@ -289,18 +304,24 @@ cd /opt/code-review-bot
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
-## 11. 停止服务
+## 11. 停止应用服务
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.prod.yml down
 ```
 
-保留 PostgreSQL 数据卷。
+这只停止 `api` 和 `web`，不会停止或删除数据库。
 
-如果要连数据也删除：
+如果你使用 `docker-compose.db.yml` 自建了 PostgreSQL，数据库要单独管理：
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml down -v
+docker compose --env-file .env.production -f docker-compose.db.yml stop
 ```
 
-谨慎使用 `-v`，会删除数据库数据。
+不要在生产环境随意执行：
+
+```bash
+docker compose --env-file .env.production -f docker-compose.db.yml down -v
+```
+
+`-v` 会删除 PostgreSQL 数据卷。
