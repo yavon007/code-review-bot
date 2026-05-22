@@ -130,33 +130,6 @@ server {
 
     client_max_body_size 20m;
 
-    location /webhooks/gitea {
-        proxy_pass http://127.0.0.1:8080/webhooks/gitea;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:8080/api/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-
-    location /healthz {
-        proxy_pass http://127.0.0.1:8080/healthz;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-
     location / {
         proxy_pass http://127.0.0.1:5173/;
         proxy_http_version 1.1;
@@ -183,18 +156,11 @@ systemctl reload nginx
 
 ### 方案 A：只暴露 webhook，不公开 Admin
 
-Nginx 中只配置：
-
-```nginx
-location /webhooks/gitea { ... }
-location /healthz { ... }
-```
-
-不要配置 `/` 和 `/api/` 给公网。
+如果暂时不想公开 Admin，可以只给 webhook 单独配置一个域名或 location，并把其他路径返回 404。注意当前生产 compose 只把 `web` 映射到宿主机，`api` 不直接映射端口；这种模式需要额外把 API 映射到本地端口，或让宿主机 Nginx 加入 Docker 网络。
 
 ### 方案 B：用 Nginx basic auth 保护 Admin
 
-给 `/` 和 `/api/` 加 basic auth。
+给 `/` 加 basic auth。`web` 容器会在内部把 `/api/` 转发到 `api:8080`。
 
 示例：
 
@@ -203,12 +169,6 @@ location / {
     auth_basic "Review Bot Admin";
     auth_basic_user_file /etc/nginx/.htpasswd;
     proxy_pass http://127.0.0.1:5173/;
-}
-
-location /api/ {
-    auth_basic "Review Bot Admin";
-    auth_basic_user_file /etc/nginx/.htpasswd;
-    proxy_pass http://127.0.0.1:8080/api/;
 }
 ```
 

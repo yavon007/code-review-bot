@@ -17,8 +17,8 @@ services:
       REVIEW_MAX_DIFF_BYTES: ${REVIEW_MAX_DIFF_BYTES:-120000}
       WORKER_POLL_INTERVAL: ${WORKER_POLL_INTERVAL:-5s}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
-    ports:
-      - "127.0.0.1:8080:8080"
+    expose:
+      - "8080"
 
   web:
     build:
