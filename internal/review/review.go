@@ -17,9 +17,20 @@ type Input struct {
 }
 
 type Result struct {
-	Summary   string
-	RiskLevel string
-	Decision  string
+	Summary   string    `json:"summary"`
+	RiskLevel string    `json:"risk_level"`
+	Decision  string    `json:"decision"`
+	Findings  []Finding `json:"findings"`
+}
+
+type Finding struct {
+	Path       string  `json:"path"`
+	Line       int     `json:"line"`
+	Severity   string  `json:"severity"`
+	Category   string  `json:"category"`
+	Title      string  `json:"title"`
+	Body       string  `json:"body"`
+	Confidence float64 `json:"confidence"`
 }
 
 type Reviewer interface {
@@ -34,6 +45,7 @@ func (r MockReviewer) Review(ctx context.Context, input Input) (Result, error) {
 		Summary:   fmt.Sprintf("已收到 PR #%d 的代码审查任务。当前拉取到 %d 个变更文件，diff 长度 %d 字节。未配置 OPENAI_API_KEY，因此使用 mock reviewer。", input.Job.PRNumber, len(input.ChangedFiles), len(input.Diff)),
 		RiskLevel: "low",
 		Decision:  "comment",
+		Findings:  []Finding{},
 	}, nil
 }
 
@@ -46,6 +58,7 @@ func buildPrompt(input Input) string {
 	if input.DiffTruncated {
 		builder.WriteString("Diff truncated: true\n")
 	}
+	builder.WriteString("Review output: include concrete findings when there are correctness, security, data loss, concurrency, performance, or test gap issues. Use line=0 for file-level findings. Use decision=request_changes only for high-confidence blocking issues.\n")
 	builder.WriteString("\nChanged files:\n")
 	for _, file := range input.ChangedFiles {
 		builder.WriteString(fmt.Sprintf("- %s status=%s additions=%d deletions=%d changes=%d\n", file.Filename, file.Status, file.Additions, file.Deletions, file.Changes))

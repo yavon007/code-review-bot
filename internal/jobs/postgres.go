@@ -2,12 +2,15 @@ package jobs
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
-
-	"code-review-bot/internal/webhook"
+	"strconv"
 )
+
+import "code-review-bot/internal/webhook"
 
 type PostgresStore struct {
 	db *sql.DB
@@ -50,7 +53,7 @@ func (s *PostgresStore) Create(ctx context.Context, input webhook.ReviewJobInput
 		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		on conflict (repo_full_name, pr_number, head_sha) do nothing
 		returning id, delivery_id, event_name, action, repo_full_name, owner_name, repo_name,
-			pr_number, head_sha, base_sha, sender, status, coalesce(error_message, ''),
+			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
 			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
 	`, input.DeliveryID, input.EventName, input.Action, input.RepoFullName, input.Owner, input.Repo,
 		input.PRNumber, input.HeadSHA, input.BaseSHA, input.Sender, StatusQueued).Scan(
@@ -66,6 +69,7 @@ func (s *PostgresStore) Create(ctx context.Context, input webhook.ReviewJobInput
 		&job.BaseSHA,
 		&job.Sender,
 		&job.Status,
+		&job.AttemptCount,
 		&job.ErrorMessage,
 		&job.Summary,
 		&job.CommentID,
@@ -86,10 +90,7 @@ func (s *PostgresStore) Create(ctx context.Context, input webhook.ReviewJobInput
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		select id, delivery_id, event_name, action, repo_full_name, owner_name, repo_name,
-			pr_number, head_sha, base_sha, sender, status, coalesce(error_message, ''),
-			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
+	rows, err := s.db.QueryContext(ctx, jobSelectQuery()+`
 		from review_jobs
 		order by id desc
 		limit 100
@@ -128,7 +129,7 @@ func (s *PostgresStore) ClaimQueued(ctx context.Context) (Job, bool, error) {
 		set status = $2, started_at = now(), attempt_count = attempt_count + 1
 		where id = (select id from selected)
 		returning id, delivery_id, event_name, action, repo_full_name, owner_name, repo_name,
-			pr_number, head_sha, base_sha, sender, status, coalesce(error_message, ''),
+			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
 			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
 	`, StatusQueued, StatusRunning).Scan(
 		&job.ID,
@@ -143,6 +144,7 @@ func (s *PostgresStore) ClaimQueued(ctx context.Context) (Job, bool, error) {
 		&job.BaseSHA,
 		&job.Sender,
 		&job.Status,
+		&job.AttemptCount,
 		&job.ErrorMessage,
 		&job.Summary,
 		&job.CommentID,
@@ -157,12 +159,12 @@ func (s *PostgresStore) ClaimQueued(ctx context.Context) (Job, bool, error) {
 	return job, true, nil
 }
 
-func (s *PostgresStore) Complete(ctx context.Context, id int64, summary string, commentID string) error {
+func (s *PostgresStore) Complete(ctx context.Context, id int64, status Status, summary string, commentID string) error {
 	_, err := s.db.ExecContext(ctx, `
 		update review_jobs
 		set status = $1, summary = $2, gitea_comment_id = $3, finished_at = now(), error_message = null
 		where id = $4
-	`, StatusSucceeded, summary, commentID, id)
+	`, status, summary, commentID, id)
 	return err
 }
 
@@ -175,29 +177,16 @@ func (s *PostgresStore) Fail(ctx context.Context, id int64, status Status, messa
 	return err
 }
 
-func (s *PostgresStore) findByDeliveryID(ctx context.Context, tx *sql.Tx, deliveryID string) (Job, error) {
-	return queryOneJob(ctx, tx, `
-		select id, delivery_id, event_name, action, repo_full_name, owner_name, repo_name,
-			pr_number, head_sha, base_sha, sender, status, coalesce(error_message, ''),
-			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
-		from review_jobs
-		where delivery_id = $1
-	`, deliveryID)
-}
-
-func (s *PostgresStore) findByReviewKey(ctx context.Context, tx *sql.Tx, repoFullName string, prNumber int, headSHA string) (Job, error) {
-	return queryOneJob(ctx, tx, `
-		select id, delivery_id, event_name, action, repo_full_name, owner_name, repo_name,
-			pr_number, head_sha, base_sha, sender, status, coalesce(error_message, ''),
-			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
-		from review_jobs
-		where repo_full_name = $1 and pr_number = $2 and head_sha = $3
-	`, repoFullName, prNumber, headSHA)
-}
-
-func queryOneJob(ctx context.Context, tx *sql.Tx, query string, args ...any) (Job, error) {
+func (s *PostgresStore) Retry(ctx context.Context, id int64) (Job, error) {
 	var job Job
-	err := tx.QueryRowContext(ctx, query, args...).Scan(
+	err := s.db.QueryRowContext(ctx, `
+		update review_jobs
+		set status = $1, error_message = null, summary = null, started_at = null, finished_at = null, queued_at = now()
+		where id = $2 and status = $3
+		returning id, delivery_id, event_name, action, repo_full_name, owner_name, repo_name,
+			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
+			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
+	`, StatusQueued, id, StatusErrored).Scan(
 		&job.ID,
 		&job.DeliveryID,
 		&job.EventName,
@@ -210,22 +199,148 @@ func queryOneJob(ctx context.Context, tx *sql.Tx, query string, args ...any) (Jo
 		&job.BaseSHA,
 		&job.Sender,
 		&job.Status,
+		&job.AttemptCount,
 		&job.ErrorMessage,
 		&job.Summary,
 		&job.CommentID,
 		&job.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
+		return Job{}, ErrJobNotRetryable
+	}
+	return job, err
+}
+
+func (s *PostgresStore) SaveFindings(ctx context.Context, jobID int64, findings []ReviewFinding) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `delete from review_findings where job_id = $1`, jobID); err != nil {
+		return err
+	}
+
+	for _, finding := range findings {
+		line := any(nil)
+		if finding.Line > 0 {
+			line = finding.Line
+		}
+		hash := finding.FindingHash
+		if hash == "" {
+			hash = findingHash(jobID, finding)
+		}
+		_, err := tx.ExecContext(ctx, `
+			insert into review_findings (
+				job_id, finding_hash, path, side, line, severity, category, title, body, confidence, is_inline, is_posted
+			) values ($1, $2, $3, 'RIGHT', $4, $5, $6, $7, $8, $9, $10, $11)
+			on conflict (finding_hash) do update set
+				path = excluded.path,
+				line = excluded.line,
+				severity = excluded.severity,
+				category = excluded.category,
+				title = excluded.title,
+				body = excluded.body,
+				confidence = excluded.confidence
+		`, jobID, hash, finding.Path, line, finding.Severity, finding.Category, finding.Title, finding.Body, finding.Confidence, finding.IsInline, finding.IsPosted)
+		if err != nil {
+			return fmt.Errorf("insert review finding: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *PostgresStore) ListFindings(ctx context.Context, jobID int64) ([]ReviewFinding, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		select id, job_id, path, line, severity, category, title, body, confidence, is_inline, is_posted,
+			coalesce(gitea_comment_id, ''), coalesce(gitea_comment_url, ''), coalesce(post_error, ''), finding_hash
+		from review_findings
+		where job_id = $1
+		order by id asc
+	`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]ReviewFinding, 0)
+	for rows.Next() {
+		var finding ReviewFinding
+		var line sql.NullInt64
+		var confidence sql.NullFloat64
+		if err := rows.Scan(
+			&finding.ID,
+			&finding.JobID,
+			&finding.Path,
+			&line,
+			&finding.Severity,
+			&finding.Category,
+			&finding.Title,
+			&finding.Body,
+			&confidence,
+			&finding.IsInline,
+			&finding.IsPosted,
+			&finding.CommentID,
+			&finding.CommentURL,
+			&finding.PostError,
+			&finding.FindingHash,
+		); err != nil {
+			return nil, err
+		}
+		if line.Valid {
+			finding.Line = int(line.Int64)
+		}
+		if confidence.Valid {
+			finding.Confidence = confidence.Float64
+		}
+		result = append(result, finding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) findByDeliveryID(ctx context.Context, tx *sql.Tx, deliveryID string) (Job, error) {
+	return queryOneJob(ctx, tx, jobSelectQuery()+`
+		from review_jobs
+		where delivery_id = $1
+	`, deliveryID)
+}
+
+func (s *PostgresStore) findByReviewKey(ctx context.Context, tx *sql.Tx, repoFullName string, prNumber int, headSHA string) (Job, error) {
+	return queryOneJob(ctx, tx, jobSelectQuery()+`
+		from review_jobs
+		where repo_full_name = $1 and pr_number = $2 and head_sha = $3
+	`, repoFullName, prNumber, headSHA)
+}
+
+func jobSelectQuery() string {
+	return `
+		select id, delivery_id, event_name, action, repo_full_name, owner_name, repo_name,
+			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
+			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
+	`
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+type jobQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func queryOneJob(ctx context.Context, db jobQuerier, query string, args ...any) (Job, error) {
+	job, err := scanJob(db.QueryRowContext(ctx, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, err
 	}
 	return job, err
 }
 
-type jobScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanJob(scanner jobScanner) (Job, error) {
+func scanJob(scanner rowScanner) (Job, error) {
 	var job Job
 	err := scanner.Scan(
 		&job.ID,
@@ -240,10 +355,16 @@ func scanJob(scanner jobScanner) (Job, error) {
 		&job.BaseSHA,
 		&job.Sender,
 		&job.Status,
+		&job.AttemptCount,
 		&job.ErrorMessage,
 		&job.Summary,
 		&job.CommentID,
 		&job.CreatedAt,
 	)
 	return job, err
+}
+
+func findingHash(jobID int64, finding ReviewFinding) string {
+	hash := sha256.Sum256([]byte(strconv.FormatInt(jobID, 10) + "\x00" + finding.Path + "\x00" + strconv.Itoa(finding.Line) + "\x00" + finding.Severity + "\x00" + finding.Title + "\x00" + finding.Body))
+	return hex.EncodeToString(hash[:])
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"code-review-bot/internal/config"
 	"code-review-bot/internal/jobs"
@@ -38,6 +39,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("POST /webhooks/gitea", s.handleGiteaWebhook)
 	s.mux.HandleFunc("GET /api/jobs", s.handleListJobs)
+	s.mux.HandleFunc("GET /api/jobs/{id}/findings", s.handleListFindings)
+	s.mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +101,45 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobList})
+}
+
+func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseJobID(w, r)
+	if !ok {
+		return
+	}
+	findings, err := s.jobs.ListFindings(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list findings")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"findings": findings})
+}
+
+func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseJobID(w, r)
+	if !ok {
+		return
+	}
+	job, err := s.jobs.Retry(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, jobs.ErrJobNotRetryable) || errors.Is(err, jobs.ErrJobNotFound) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to retry job")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job": job})
+}
+
+func parseJobID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return 0, false
+	}
+	return id, true
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

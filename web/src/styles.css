@@ -150,9 +150,20 @@ button:disabled {
 }
 
 .badge.failed,
-.badge.errored {
+.badge.errored,
+.badge.high {
   background: #fee2e2;
   color: #991b1b;
+}
+
+.badge.medium {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge.low {
+  background: #dcfce7;
+  color: #166534;
 }
 
 .detail {
@@ -197,4 +208,42 @@ code {
 
 .errorText {
   color: #b91c1c;
+}
+
+.detailActions {
+  border-bottom: 1px solid #edf2f7;
+  padding: 0 18px 18px;
+}
+
+.panelHeader.compact {
+  border-top: 1px solid #e2e8f0;
+}
+
+.findingList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 18px;
+}
+
+.finding {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.findingTopline {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.finding p {
+  margin: 10px 0;
+}
+
+.finding small {
+  color: #64748b;
 }

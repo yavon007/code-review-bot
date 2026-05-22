@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"code-review-bot/internal/gitea"
@@ -89,26 +90,33 @@ func (w *Worker) processOne(ctx context.Context) {
 		return
 	}
 
+	findings := reviewFindings(job.ID, result.Findings)
+	if err := w.store.SaveFindings(ctx, job.ID, findings); err != nil {
+		w.fail(ctx, job, jobs.StatusErrored, fmt.Errorf("save review findings: %w", err))
+		return
+	}
+
 	comment, err := w.gitea.CreateIssueComment(ctx, job.Owner, job.Repo, job.PRNumber, formatSummary(job, result))
 	if err != nil {
 		w.fail(ctx, job, jobs.StatusErrored, fmt.Errorf("create summary comment: %w", err))
 		return
 	}
 
+	finalStatus := reviewJobStatus(result)
 	if err := w.gitea.CreateCommitStatus(ctx, job.Owner, job.Repo, job.HeadSHA, gitea.CommitStatus{
-		State:       "success",
-		Description: "Code review bot completed review.",
+		State:       commitStatusState(finalStatus),
+		Description: commitStatusDescription(finalStatus),
 		Context:     "code-review-bot/review",
 	}); err != nil {
-		w.fail(ctx, job, jobs.StatusErrored, fmt.Errorf("create success status: %w", err))
+		w.fail(ctx, job, jobs.StatusErrored, fmt.Errorf("create final status: %w", err))
 		return
 	}
 
-	if err := w.store.Complete(ctx, job.ID, result.Summary, fmt.Sprintf("%d", comment.ID)); err != nil {
+	if err := w.store.Complete(ctx, job.ID, finalStatus, result.Summary, fmt.Sprintf("%d", comment.ID)); err != nil {
 		w.logger.Error("failed to mark review job complete", "job_id", job.ID, "error", err)
 		return
 	}
-	w.logger.Info("completed review job", "job_id", job.ID)
+	w.logger.Info("completed review job", "job_id", job.ID, "status", finalStatus, "findings", len(findings))
 }
 
 func (w *Worker) fail(ctx context.Context, job jobs.Job, status jobs.Status, err error) {
@@ -124,5 +132,58 @@ func (w *Worker) fail(ctx context.Context, job jobs.Job, status jobs.Status, err
 }
 
 func formatSummary(job jobs.Job, result review.Result) string {
-	return fmt.Sprintf("## Code Review Bot\n\n%s\n\nRisk: `%s`  \nDecision: `%s`\n\n---\nPR: #%d  \nHead SHA: `%s`", result.Summary, result.RiskLevel, result.Decision, job.PRNumber, job.HeadSHA)
+	var builder strings.Builder
+	builder.WriteString("## Code Review Bot\n\n")
+	builder.WriteString(result.Summary)
+	builder.WriteString(fmt.Sprintf("\n\nRisk: `%s`  \nDecision: `%s`", result.RiskLevel, result.Decision))
+	if len(result.Findings) > 0 {
+		builder.WriteString("\n\n### Findings\n")
+		for _, finding := range result.Findings {
+			location := finding.Path
+			if finding.Line > 0 {
+				location = fmt.Sprintf("%s:%d", finding.Path, finding.Line)
+			}
+			builder.WriteString(fmt.Sprintf("\n- **[%s/%s] %s** (`%s`)\n  %s\n", finding.Severity, finding.Category, finding.Title, location, finding.Body))
+		}
+	}
+	builder.WriteString(fmt.Sprintf("\n---\nPR: #%d  \nHead SHA: `%s`", job.PRNumber, job.HeadSHA))
+	return builder.String()
+}
+
+func reviewJobStatus(result review.Result) jobs.Status {
+	if result.Decision == "request_changes" || result.RiskLevel == "high" {
+		return jobs.StatusFailed
+	}
+	return jobs.StatusSucceeded
+}
+
+func commitStatusState(status jobs.Status) string {
+	if status == jobs.StatusFailed {
+		return "failure"
+	}
+	return "success"
+}
+
+func commitStatusDescription(status jobs.Status) string {
+	if status == jobs.StatusFailed {
+		return "Code review found blocking issues."
+	}
+	return "Code review bot completed review."
+}
+
+func reviewFindings(jobID int64, findings []review.Finding) []jobs.ReviewFinding {
+	result := make([]jobs.ReviewFinding, 0, len(findings))
+	for _, finding := range findings {
+		result = append(result, jobs.ReviewFinding{
+			JobID:      jobID,
+			Path:       finding.Path,
+			Line:       finding.Line,
+			Severity:   finding.Severity,
+			Category:   finding.Category,
+			Title:      finding.Title,
+			Body:       finding.Body,
+			Confidence: finding.Confidence,
+		})
+	}
+	return result
 }

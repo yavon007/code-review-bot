@@ -11,14 +11,21 @@ import (
 	"code-review-bot/internal/webhook"
 )
 
-var ErrDuplicateJob = errors.New("duplicate review job")
+var (
+	ErrDuplicateJob    = errors.New("duplicate review job")
+	ErrJobNotFound     = errors.New("review job not found")
+	ErrJobNotRetryable = errors.New("review job is not retryable")
+)
 
 type Store interface {
 	Create(ctx context.Context, input webhook.ReviewJobInput) (Job, error)
 	List(ctx context.Context) ([]Job, error)
 	ClaimQueued(ctx context.Context) (Job, bool, error)
-	Complete(ctx context.Context, id int64, summary string, commentID string) error
+	Complete(ctx context.Context, id int64, status Status, summary string, commentID string) error
 	Fail(ctx context.Context, id int64, status Status, message string) error
+	Retry(ctx context.Context, id int64) (Job, error)
+	SaveFindings(ctx context.Context, jobID int64, findings []ReviewFinding) error
+	ListFindings(ctx context.Context, jobID int64) ([]ReviewFinding, error)
 }
 
 type Status string
@@ -44,16 +51,36 @@ type Job struct {
 	BaseSHA      string    `json:"base_sha"`
 	Sender       string    `json:"sender"`
 	Status       Status    `json:"status"`
+	AttemptCount int       `json:"attempt_count"`
 	ErrorMessage string    `json:"error_message,omitempty"`
 	Summary      string    `json:"summary,omitempty"`
 	CommentID    string    `json:"gitea_comment_id,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+type ReviewFinding struct {
+	ID          int64   `json:"id"`
+	JobID       int64   `json:"job_id"`
+	Path        string  `json:"path"`
+	Line        int     `json:"line,omitempty"`
+	Severity    string  `json:"severity"`
+	Category    string  `json:"category"`
+	Title       string  `json:"title"`
+	Body        string  `json:"body"`
+	Confidence  float64 `json:"confidence,omitempty"`
+	IsInline    bool    `json:"is_inline"`
+	IsPosted    bool    `json:"is_posted"`
+	CommentID   string  `json:"gitea_comment_id,omitempty"`
+	CommentURL  string  `json:"gitea_comment_url,omitempty"`
+	PostError   string  `json:"post_error,omitempty"`
+	FindingHash string  `json:"-"`
+}
+
 type MemoryStore struct {
 	mu           sync.Mutex
 	nextID       int64
 	jobs         map[int64]Job
+	findings     map[int64][]ReviewFinding
 	byReviewKey  map[string]int64
 	byDeliveryID map[string]int64
 }
@@ -62,6 +89,7 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		nextID:       1,
 		jobs:         make(map[int64]Job),
+		findings:     make(map[int64][]ReviewFinding),
 		byReviewKey:  make(map[string]int64),
 		byDeliveryID: make(map[string]int64),
 	}
@@ -139,19 +167,21 @@ func (s *MemoryStore) ClaimQueued(ctx context.Context) (Job, bool, error) {
 		return Job{}, false, nil
 	}
 	selected.Status = StatusRunning
+	selected.AttemptCount++
 	s.jobs[selected.ID] = selected
 	return selected, true, nil
 }
 
-func (s *MemoryStore) Complete(ctx context.Context, id int64, summary string, commentID string) error {
+func (s *MemoryStore) Complete(ctx context.Context, id int64, status Status, summary string, commentID string) error {
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	job := s.jobs[id]
-	job.Status = StatusSucceeded
+	job.Status = status
 	job.Summary = summary
 	job.CommentID = commentID
+	job.ErrorMessage = ""
 	s.jobs[id] = job
 	return nil
 }
@@ -166,6 +196,50 @@ func (s *MemoryStore) Fail(ctx context.Context, id int64, status Status, message
 	job.ErrorMessage = message
 	s.jobs[id] = job
 	return nil
+}
+
+func (s *MemoryStore) Retry(ctx context.Context, id int64) (Job, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, ok := s.jobs[id]
+	if !ok {
+		return Job{}, ErrJobNotFound
+	}
+	if job.Status != StatusErrored {
+		return Job{}, ErrJobNotRetryable
+	}
+	job.Status = StatusQueued
+	job.ErrorMessage = ""
+	job.Summary = ""
+	s.jobs[id] = job
+	return job, nil
+}
+
+func (s *MemoryStore) SaveFindings(ctx context.Context, jobID int64, findings []ReviewFinding) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := make([]ReviewFinding, len(findings))
+	for i, finding := range findings {
+		finding.ID = int64(i + 1)
+		finding.JobID = jobID
+		next[i] = finding
+	}
+	s.findings[jobID] = next
+	return nil
+}
+
+func (s *MemoryStore) ListFindings(ctx context.Context, jobID int64) ([]ReviewFinding, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make([]ReviewFinding, len(s.findings[jobID]))
+	copy(result, s.findings[jobID])
+	return result, nil
 }
 
 func reviewKey(repoFullName string, prNumber int, headSHA string) string {
