@@ -302,6 +302,24 @@ func (s *PostgresStore) ListFindings(ctx context.Context, jobID int64) ([]Review
 	return result, nil
 }
 
+func (s *PostgresStore) MarkFindingPosted(ctx context.Context, id int64, commentID string, commentURL string) error {
+	_, err := s.db.ExecContext(ctx, `
+		update review_findings
+		set is_posted = true, gitea_comment_id = $1, gitea_comment_url = $2, post_error = null
+		where id = $3
+	`, commentID, commentURL, id)
+	return err
+}
+
+func (s *PostgresStore) MarkFindingPostError(ctx context.Context, id int64, message string) error {
+	_, err := s.db.ExecContext(ctx, `
+		update review_findings
+		set post_error = $1
+		where id = $2
+	`, message, id)
+	return err
+}
+
 func (s *PostgresStore) findByDeliveryID(ctx context.Context, tx *sql.Tx, deliveryID string) (Job, error) {
 	return queryOneJob(ctx, tx, jobSelectQuery()+`
 		from review_jobs

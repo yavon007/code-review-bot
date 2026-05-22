@@ -88,7 +88,14 @@ func main() {
 			os.Exit(1)
 		}
 		reviewer := buildReviewer(cfg, logger)
-		go worker.New(store, giteaClient, reviewer, cfg.WorkerPollInterval, cfg.ReviewMaxDiffBytes, logger).Run(workerCtx)
+		go worker.New(store, giteaClient, reviewer, worker.Options{
+			PollInterval:       cfg.WorkerPollInterval,
+			MaxDiffBytes:       cfg.ReviewMaxDiffBytes,
+			ExcludePaths:       cfg.ReviewExcludePaths,
+			FailOnHigh:         cfg.ReviewFailOnHigh,
+			PostInlineComments: cfg.ReviewPostInlineComments,
+			MaxFindings:        cfg.ReviewMaxFindings,
+		}, logger).Run(workerCtx)
 		logger.Info("review worker started")
 	} else {
 		logger.Warn("GITEA_BASE_URL or GITEA_TOKEN is not set; review worker is disabled")

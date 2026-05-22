@@ -9,12 +9,13 @@
 - 按 PR head commit 去重
 - 将 review job 存入 PostgreSQL
 - Worker 拉取 PR changed files 和 diff
-- 调用 OpenAI-compatible Responses API 生成 summary review
+- 调用 OpenAI-compatible Responses API 生成结构化 review 和 findings
 - 回写 Gitea commit status
 - 回写 PR summary comment
-- React Admin 查看 job 状态
+- 可选回写 PR inline comments
+- React Admin 查看 job 状态、findings 和 retry 操作
 
-当前版本暂不做 inline comments、REQUEST_CHANGES、仓库配置文件和合并阻断。
+当前版本暂不做仓库配置文件。
 
 ## 目录结构
 
@@ -120,6 +121,10 @@ OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 REVIEW_MODEL=gpt-4.1
 REVIEW_MAX_DIFF_BYTES=120000
+REVIEW_EXCLUDE_PATHS=vendor/**,node_modules/**,dist/**,build/**,*.lock,*.min.js
+REVIEW_FAIL_ON_HIGH=true
+REVIEW_POST_INLINE_COMMENTS=false
+REVIEW_MAX_FINDINGS=20
 
 WORKER_POLL_INTERVAL=5s
 WORKER_CONCURRENCY=1

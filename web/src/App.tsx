@@ -30,6 +30,10 @@ type Finding = {
   title: string;
   body: string;
   confidence?: number;
+  is_inline: boolean;
+  is_posted: boolean;
+  gitea_comment_url?: string;
+  post_error?: string;
 };
 
 type JobsResponse = {
@@ -239,7 +243,10 @@ function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) 
               <small>
                 {finding.category} · {finding.path}{finding.line ? `:${finding.line}` : ''}
                 {typeof finding.confidence === 'number' ? ` · confidence ${finding.confidence.toFixed(2)}` : ''}
+                {finding.is_inline ? ` · inline ${finding.is_posted ? 'posted' : 'pending'}` : ''}
               </small>
+              {finding.gitea_comment_url ? <a href={finding.gitea_comment_url} target="_blank" rel="noreferrer">查看 inline comment</a> : null}
+              {finding.post_error ? <p className="errorText">Inline 发布失败：{finding.post_error}</p> : null}
             </article>
           ))}
         </div>

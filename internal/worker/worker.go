@@ -12,32 +12,39 @@ import (
 	"code-review-bot/internal/review"
 )
 
-type Worker struct {
-	store        jobs.Store
-	gitea        *gitea.Client
-	reviewer     review.Reviewer
-	interval     time.Duration
-	maxDiffBytes int64
-	logger       *slog.Logger
+type Options struct {
+	PollInterval       time.Duration
+	MaxDiffBytes       int64
+	ExcludePaths       []string
+	FailOnHigh         bool
+	PostInlineComments bool
+	MaxFindings        int
 }
 
-func New(store jobs.Store, giteaClient *gitea.Client, reviewer review.Reviewer, interval time.Duration, maxDiffBytes int64, logger *slog.Logger) *Worker {
+type Worker struct {
+	store    jobs.Store
+	gitea    *gitea.Client
+	reviewer review.Reviewer
+	options  Options
+	logger   *slog.Logger
+}
+
+func New(store jobs.Store, giteaClient *gitea.Client, reviewer review.Reviewer, options Options, logger *slog.Logger) *Worker {
 	return &Worker{
-		store:        store,
-		gitea:        giteaClient,
-		reviewer:     reviewer,
-		interval:     interval,
-		maxDiffBytes: maxDiffBytes,
-		logger:       logger,
+		store:    store,
+		gitea:    giteaClient,
+		reviewer: reviewer,
+		options:  options,
+		logger:   logger,
 	}
 }
 
 func (w *Worker) Run(ctx context.Context) {
-	if w.interval <= 0 {
-		w.interval = 5 * time.Second
+	if w.options.PollInterval <= 0 {
+		w.options.PollInterval = 5 * time.Second
 	}
 
-	ticker := time.NewTicker(w.interval)
+	ticker := time.NewTicker(w.options.PollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -78,11 +85,14 @@ func (w *Worker) processOne(ctx context.Context) {
 		return
 	}
 
-	diff, truncated, err := w.gitea.GetPullRequestDiff(ctx, job.Owner, job.Repo, job.PRNumber, w.maxDiffBytes)
+	diff, truncated, err := w.gitea.GetPullRequestDiff(ctx, job.Owner, job.Repo, job.PRNumber, w.options.MaxDiffBytes)
 	if err != nil {
 		w.fail(ctx, job, jobs.StatusErrored, fmt.Errorf("get pull request diff: %w", err))
 		return
 	}
+
+	changedFiles = filterChangedFiles(changedFiles, w.options.ExcludePaths)
+	diff = filterUnifiedDiff(diff, w.options.ExcludePaths)
 
 	result, err := w.reviewer.Review(ctx, review.Input{Job: job, ChangedFiles: changedFiles, Diff: diff, DiffTruncated: truncated})
 	if err != nil {
@@ -90,10 +100,14 @@ func (w *Worker) processOne(ctx context.Context) {
 		return
 	}
 
+	result.Findings = limitFindings(result.Findings, w.options.MaxFindings)
 	findings := reviewFindings(job.ID, result.Findings)
 	if err := w.store.SaveFindings(ctx, job.ID, findings); err != nil {
 		w.fail(ctx, job, jobs.StatusErrored, fmt.Errorf("save review findings: %w", err))
 		return
+	}
+	if w.options.PostInlineComments {
+		w.postInlineComments(ctx, job)
 	}
 
 	comment, err := w.gitea.CreateIssueComment(ctx, job.Owner, job.Repo, job.PRNumber, formatSummary(job, result))
@@ -102,7 +116,7 @@ func (w *Worker) processOne(ctx context.Context) {
 		return
 	}
 
-	finalStatus := reviewJobStatus(result)
+	finalStatus := w.reviewJobStatus(result)
 	if err := w.gitea.CreateCommitStatus(ctx, job.Owner, job.Repo, job.HeadSHA, gitea.CommitStatus{
 		State:       commitStatusState(finalStatus),
 		Description: commitStatusDescription(finalStatus),
@@ -131,6 +145,30 @@ func (w *Worker) fail(ctx context.Context, job jobs.Job, status jobs.Status, err
 	}
 }
 
+func (w *Worker) postInlineComments(ctx context.Context, job jobs.Job) {
+	findings, err := w.store.ListFindings(ctx, job.ID)
+	if err != nil {
+		w.logger.Error("failed to list findings for inline comments", "job_id", job.ID, "error", err)
+		return
+	}
+	for _, finding := range findings {
+		if !finding.IsInline || finding.IsPosted || finding.Path == "" || finding.Line <= 0 {
+			continue
+		}
+		comment, err := w.gitea.CreatePullReviewComment(ctx, job.Owner, job.Repo, job.PRNumber, job.HeadSHA, gitea.InlineReviewComment{
+			Path: finding.Path,
+			Line: finding.Line,
+			Body: inlineCommentBody(finding),
+		})
+		if err != nil {
+			w.logger.Warn("failed to post inline comment", "job_id", job.ID, "finding_id", finding.ID, "error", err)
+			_ = w.store.MarkFindingPostError(ctx, finding.ID, err.Error())
+			continue
+		}
+		_ = w.store.MarkFindingPosted(ctx, finding.ID, fmt.Sprintf("%d", comment.ID), comment.HTMLURL)
+	}
+}
+
 func formatSummary(job jobs.Job, result review.Result) string {
 	var builder strings.Builder
 	builder.WriteString("## Code Review Bot\n\n")
@@ -150,8 +188,8 @@ func formatSummary(job jobs.Job, result review.Result) string {
 	return builder.String()
 }
 
-func reviewJobStatus(result review.Result) jobs.Status {
-	if result.Decision == "request_changes" || result.RiskLevel == "high" {
+func (w *Worker) reviewJobStatus(result review.Result) jobs.Status {
+	if result.Decision == "request_changes" || (w.options.FailOnHigh && result.RiskLevel == "high") {
 		return jobs.StatusFailed
 	}
 	return jobs.StatusSucceeded
@@ -171,6 +209,17 @@ func commitStatusDescription(status jobs.Status) string {
 	return "Code review bot completed review."
 }
 
+func inlineCommentBody(finding jobs.ReviewFinding) string {
+	return fmt.Sprintf("**[%s/%s] %s**\n\n%s", finding.Severity, finding.Category, finding.Title, finding.Body)
+}
+
+func limitFindings(findings []review.Finding, maxFindings int) []review.Finding {
+	if maxFindings <= 0 || len(findings) <= maxFindings {
+		return findings
+	}
+	return findings[:maxFindings]
+}
+
 func reviewFindings(jobID int64, findings []review.Finding) []jobs.ReviewFinding {
 	result := make([]jobs.ReviewFinding, 0, len(findings))
 	for _, finding := range findings {
@@ -183,6 +232,7 @@ func reviewFindings(jobID int64, findings []review.Finding) []jobs.ReviewFinding
 			Title:      finding.Title,
 			Body:       finding.Body,
 			Confidence: finding.Confidence,
+			IsInline:   finding.Path != "" && finding.Line > 0,
 		})
 	}
 	return result

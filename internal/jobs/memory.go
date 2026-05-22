@@ -15,6 +15,7 @@ var (
 	ErrDuplicateJob    = errors.New("duplicate review job")
 	ErrJobNotFound     = errors.New("review job not found")
 	ErrJobNotRetryable = errors.New("review job is not retryable")
+	ErrFindingNotFound = errors.New("review finding not found")
 )
 
 type Store interface {
@@ -26,6 +27,8 @@ type Store interface {
 	Retry(ctx context.Context, id int64) (Job, error)
 	SaveFindings(ctx context.Context, jobID int64, findings []ReviewFinding) error
 	ListFindings(ctx context.Context, jobID int64) ([]ReviewFinding, error)
+	MarkFindingPosted(ctx context.Context, id int64, commentID string, commentURL string) error
+	MarkFindingPostError(ctx context.Context, id int64, message string) error
 }
 
 type Status string
@@ -240,6 +243,43 @@ func (s *MemoryStore) ListFindings(ctx context.Context, jobID int64) ([]ReviewFi
 	result := make([]ReviewFinding, len(s.findings[jobID]))
 	copy(result, s.findings[jobID])
 	return result, nil
+}
+
+func (s *MemoryStore) MarkFindingPosted(ctx context.Context, id int64, commentID string, commentURL string) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for jobID, findings := range s.findings {
+		for i := range findings {
+			if findings[i].ID == id {
+				findings[i].IsPosted = true
+				findings[i].CommentID = commentID
+				findings[i].CommentURL = commentURL
+				findings[i].PostError = ""
+				s.findings[jobID] = findings
+				return nil
+			}
+		}
+	}
+	return ErrFindingNotFound
+}
+
+func (s *MemoryStore) MarkFindingPostError(ctx context.Context, id int64, message string) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for jobID, findings := range s.findings {
+		for i := range findings {
+			if findings[i].ID == id {
+				findings[i].PostError = message
+				s.findings[jobID] = findings
+				return nil
+			}
+		}
+	}
+	return ErrFindingNotFound
 }
 
 func reviewKey(repoFullName string, prNumber int, headSHA string) string {

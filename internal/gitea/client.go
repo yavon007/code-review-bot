@@ -32,6 +32,18 @@ type IssueComment struct {
 	HTMLURL string `json:"html_url"`
 }
 
+type InlineReviewComment struct {
+	Path string
+	Line int
+	Body string
+}
+
+type PullReview struct {
+	ID       int64          `json:"id"`
+	HTMLURL  string         `json:"html_url"`
+	Comments []IssueComment `json:"comments"`
+}
+
 type ChangedFile struct {
 	Filename  string `json:"filename"`
 	Status    string `json:"status"`
@@ -85,6 +97,29 @@ func (c *Client) CreateIssueComment(ctx context.Context, owner string, repo stri
 		return IssueComment{}, err
 	}
 	return comment, nil
+}
+
+func (c *Client) CreatePullReviewComment(ctx context.Context, owner string, repo string, prNumber int, headSHA string, comment InlineReviewComment) (IssueComment, error) {
+	endpoint := c.apiPath("repos", owner, repo, "pulls", strconv.Itoa(prNumber), "reviews")
+	payload := map[string]any{
+		"commit_id": headSHA,
+		"event":     "COMMENT",
+		"comments": []map[string]any{
+			{
+				"path":         comment.Path,
+				"body":         comment.Body,
+				"new_position": comment.Line,
+			},
+		},
+	}
+	var review PullReview
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, payload, &review); err != nil {
+		return IssueComment{}, err
+	}
+	if len(review.Comments) > 0 {
+		return review.Comments[0], nil
+	}
+	return IssueComment{ID: review.ID, HTMLURL: review.HTMLURL}, nil
 }
 
 func (c *Client) apiPath(parts ...string) string {
