@@ -1,3 +1,4 @@
+-- +goose Up
 create table if not exists webhook_deliveries (
   id bigserial primary key,
   delivery_id text not null unique,
@@ -61,3 +62,8 @@ create table if not exists review_findings (
   post_error text,
   created_at timestamptz not null default now()
 );
+
+-- +goose Down
+drop table if exists review_findings;
+drop table if exists review_jobs;
+drop table if exists webhook_deliveries;
