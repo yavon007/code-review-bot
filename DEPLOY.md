@@ -67,10 +67,10 @@ nano .env.production
 ```env
 DATABASE_URL=postgres://reviewbot:数据库密码@postgres:5432/reviewbot?sslmode=disable
 POSTGRES_PASSWORD=数据库密码
-GITEA_BASE_URL=https://你的-gitea-地址
-GITEA_TOKEN=你的-gitea-token
-GITEA_WEBHOOK_SECRET=改成长随机-secret
+SESSION_SECRET=改成长随机-session-secret
 ```
+
+Gitea、AI、review 策略等运行期配置不再写入 `.env.production`，首次打开 Admin 时通过安装向导写入数据库。
 
 生产推荐使用独立 PostgreSQL 或已经部署好的数据库。应用发布只更新 `api` 和 `web`，不重复部署数据库。
 
@@ -84,15 +84,7 @@ docker compose --env-file .env.production -f docker-compose.db.yml up -d
 
 这种方式会创建名为 `code_review_bot_postgres_data` 的 Docker volume。后续发布应用时不要执行 `down -v`，否则会删除数据。
 
-如果要真实 AI review，还要填：
-
-```env
-OPENAI_API_KEY=你的-api-key
-OPENAI_BASE_URL=https://api.openai.com/v1
-REVIEW_MODEL=你的可用模型
-```
-
-如果 `OPENAI_API_KEY` 留空，系统会使用 mock reviewer，只适合验证 webhook、队列、Gitea status/comment 回写链路。
+如果要真实 AI review，在安装向导或 Admin 系统配置里填写 OpenAI API Key、Base URL 和 Review Model。如果 OpenAI API Key 留空，系统会使用 mock reviewer，只适合验证 webhook、队列、Gitea status/comment 回写链路。
 
 ## 4. 启动应用服务
 
@@ -150,9 +142,9 @@ systemctl reload nginx
 
 ## 6. 重要安全提醒
 
-当前 React Admin 还没有登录认证。
+React Admin 已有内置管理员登录，首次访问会创建第一个管理员。生产环境仍建议设置 `SESSION_SECRET`，并按需叠加 Nginx basic auth 或 IP 限制。
 
-如果域名直接暴露到公网，建议至少先做一个限制：
+如果域名直接暴露到公网，可以选择额外限制：
 
 ### 方案 A：只暴露 webhook，不公开 Admin
 
@@ -202,7 +194,7 @@ curl https://reviewbot.example.com/healthz
 https://reviewbot.example.com
 ```
 
-如果你选择不公开 Admin，则跳过这一步。
+首次打开会进入安装向导，创建管理员账号，并填写 Gitea、AI 和 review 策略配置。如果你选择不公开 Admin，则跳过这一步。
 
 ## 8. 配置 Gitea Webhook
 
@@ -223,7 +215,7 @@ application/json
 Secret：
 
 ```text
-和 .env.production 的 GITEA_WEBHOOK_SECRET 完全一致
+和 Admin 系统配置里的 Webhook Secret 完全一致
 ```
 
 Events：

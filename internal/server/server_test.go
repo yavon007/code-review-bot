@@ -62,7 +62,7 @@ func TestGiteaWebhookQueuesJob(t *testing.T) {
 func newTestServer(secret string) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{GiteaWebhookSecret: secret, BotName: "gpt-review-bot"}
-	return New(cfg, jobs.NewMemoryStore(), logger).Handler()
+	return New(cfg, jobs.NewMemoryStore(), nil, logger).Handler()
 }
 
 func sign(secret string, body []byte) string {

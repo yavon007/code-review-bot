@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Port                     string
 	DatabaseURL              string
+	SessionSecret            string
 	GiteaBaseURL             string
 	GiteaToken               string
 	GiteaWebhookSecret       string
@@ -30,6 +31,7 @@ func Load() Config {
 	return Config{
 		Port:                     getEnv("PORT", "8080"),
 		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		SessionSecret:            os.Getenv("SESSION_SECRET"),
 		GiteaBaseURL:             os.Getenv("GITEA_BASE_URL"),
 		GiteaToken:               os.Getenv("GITEA_TOKEN"),
 		GiteaWebhookSecret:       os.Getenv("GITEA_WEBHOOK_SECRET"),

@@ -12,26 +12,11 @@ import (
 
 	"code-review-bot/internal/config"
 	"code-review-bot/internal/db"
-	"code-review-bot/internal/gitea"
 	"code-review-bot/internal/jobs"
-	"code-review-bot/internal/review"
 	"code-review-bot/internal/server"
+	"code-review-bot/internal/settings"
 	"code-review-bot/internal/worker"
 )
-
-func buildReviewer(cfg config.Config, logger *slog.Logger) review.Reviewer {
-	if cfg.OpenAIAPIKey == "" {
-		logger.Warn("OPENAI_API_KEY is not set; using mock reviewer")
-		return review.MockReviewer{}
-	}
-	reviewer, err := review.NewOpenAIReviewer(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, cfg.ReviewModel)
-	if err != nil {
-		logger.Error("openai reviewer initialization failed; using mock reviewer", "error", err)
-		return review.MockReviewer{}
-	}
-	logger.Info("using openai-compatible reviewer", "model", cfg.ReviewModel)
-	return reviewer
-}
 
 func openDatabaseWithRetry(ctx context.Context, databaseURL string, logger *slog.Logger) (*sql.DB, error) {
 	deadline := time.Now().Add(60 * time.Second)
@@ -60,6 +45,7 @@ func main() {
 	ctx := context.Background()
 
 	var store jobs.Store = jobs.NewMemoryStore()
+	var settingsStore *settings.Store
 	var databaseCloser func() error
 	if cfg.DatabaseURL != "" {
 		database, err := openDatabaseWithRetry(ctx, cfg.DatabaseURL, logger)
@@ -74,34 +60,22 @@ func main() {
 		}
 		databaseCloser = database.Close
 		store = jobs.NewPostgresStore(database)
+		settingsStore = settings.NewStore(database, settings.FromConfig(cfg))
 		logger.Info("using postgresql job store")
 	} else {
-		logger.Warn("DATABASE_URL is not set; using in-memory job store")
+		logger.Warn("DATABASE_URL is not set; using in-memory job store and env configuration")
 	}
 
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	defer stopWorker()
-	if cfg.GiteaBaseURL != "" && cfg.GiteaToken != "" {
-		giteaClient, err := gitea.NewClient(cfg.GiteaBaseURL, cfg.GiteaToken)
-		if err != nil {
-			logger.Error("gitea client initialization failed", "error", err)
-			os.Exit(1)
-		}
-		reviewer := buildReviewer(cfg, logger)
-		go worker.New(store, giteaClient, reviewer, worker.Options{
-			PollInterval:       cfg.WorkerPollInterval,
-			MaxDiffBytes:       cfg.ReviewMaxDiffBytes,
-			ExcludePaths:       cfg.ReviewExcludePaths,
-			FailOnHigh:         cfg.ReviewFailOnHigh,
-			PostInlineComments: cfg.ReviewPostInlineComments,
-			MaxFindings:        cfg.ReviewMaxFindings,
-		}, logger).Run(workerCtx)
+	if settingsStore != nil {
+		go worker.New(store, settingsStore, worker.Options{PollInterval: cfg.WorkerPollInterval}, logger).Run(workerCtx)
 		logger.Info("review worker started")
 	} else {
-		logger.Warn("GITEA_BASE_URL or GITEA_TOKEN is not set; review worker is disabled")
+		logger.Warn("review worker is disabled without DATABASE_URL")
 	}
 
-	handler := server.New(cfg, store, logger).Handler()
+	handler := server.New(cfg, store, settingsStore, logger).Handler()
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,

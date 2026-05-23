@@ -56,11 +56,7 @@ Gitea 里通常在：
 Settings -> Applications -> Generate New Token
 ```
 
-创建后保存 token，后面填到 `.env`：
-
-```env
-GITEA_TOKEN=你的_gitea_token
-```
+创建后保存 token，首次进入 Admin 安装向导时填写。
 
 ## 2. 准备 Webhook Secret
 
@@ -72,7 +68,7 @@ reviewbot-dev-secret-please-change
 
 这个值要同时填到：
 
-1. `.env` 的 `GITEA_WEBHOOK_SECRET`
+1. Admin 安装向导/系统配置里的 `Webhook Secret`
 2. Gitea 仓库 webhook 的 Secret
 
 ## 3. 准备模型配置
@@ -86,15 +82,9 @@ reviewbot-dev-secret-please-change
 - Review 阶段使用 mock reviewer
 - 不会调用外部模型
 
-如果要验证真实 AI review，需要填写：
+如果要验证真实 AI review，需要在 Admin 安装向导/系统配置里填写 `OpenAI API Key`、`OpenAI Base URL` 和 `Review Model`。
 
-```env
-OPENAI_API_KEY=你的_openai_key
-OPENAI_BASE_URL=https://api.openai.com/v1
-REVIEW_MODEL=你的可用模型
-```
-
-注意：`REVIEW_MODEL` 必须是你账号实际可用的模型名。
+注意：`Review Model` 必须是你账号实际可用的模型名。
 
 ## 4. 创建 `.env`
 
@@ -111,24 +101,10 @@ cp .env.example .env
 ```env
 PORT=8080
 DATABASE_URL=postgres://reviewbot:reviewbot@localhost:5432/reviewbot?sslmode=disable
-
-GITEA_BASE_URL=https://gitea.example.com
-GITEA_TOKEN=填写你的_gitea_token
-GITEA_WEBHOOK_SECRET=填写你的_webhook_secret
-BOT_NAME=gpt-review-bot
-
-OPENAI_API_KEY=
-OPENAI_BASE_URL=https://api.openai.com/v1
-REVIEW_MODEL=gpt-4.1
-REVIEW_MAX_DIFF_BYTES=120000
-REVIEW_EXCLUDE_PATHS=vendor/**,node_modules/**,dist/**,build/**,*.lock,*.min.js
-REVIEW_FAIL_ON_HIGH=true
-REVIEW_POST_INLINE_COMMENTS=false
-REVIEW_MAX_FINDINGS=20
-
-WORKER_POLL_INTERVAL=5s
-WORKER_CONCURRENCY=1
+SESSION_SECRET=本地可留空，生产建议填写长随机字符串
 ```
+
+Gitea、AI、review 策略等运行期配置在首次打开 Admin 时通过安装向导写入数据库，后续也可以在网页里修改。
 
 如果使用 Docker Compose，`DATABASE_URL` 在 compose 里会自动设置为容器内地址：
 
@@ -198,7 +174,7 @@ application/json
 Secret：
 
 ```text
-和 .env 里的 GITEA_WEBHOOK_SECRET 完全一致
+和 Admin 系统配置里的 Webhook Secret 完全一致
 ```
 
 事件选择：
@@ -226,6 +202,8 @@ docker compose --env-file .env up --build
 ```text
 http://localhost:5173
 ```
+
+首次访问会进入安装向导，创建管理员账号，并填写 Gitea、AI 和 review 策略配置。
 
 3. 在 Gitea 测试仓库创建一个 PR。
 
@@ -256,9 +234,9 @@ succeeded
 
 检查：
 
-- `.env` 里的 `GITEA_WEBHOOK_SECRET`
+- Admin 系统配置里的 Webhook Secret
 - Gitea webhook 页面里的 Secret
-- 修改 `.env` 后是否重启了容器
+- 修改网页配置后是否保存成功
 
 重启：
 
@@ -284,16 +262,13 @@ docker compose logs -f api
 
 ### Job 卡在 queued
 
-通常是 worker 没启动。
+通常是 worker 无法处理任务。
 
-检查 `.env` 或 compose 环境变量：
+检查 Admin 系统配置：
 
-```env
-GITEA_BASE_URL=必须填写
-GITEA_TOKEN=必须填写
-```
-
-如果这两个为空，worker 会被禁用。
+- Gitea Base URL 必须填写
+- Gitea Token 必须填写
+- 数据库和 api 日志是否正常
 
 ### Job 变成 errored
 
@@ -311,7 +286,7 @@ docker compose logs -f api
 - Gitea API 路径和当前 Gitea 版本不兼容
 - 模型 API key 或模型名不正确
 
-### 没有 OPENAI_API_KEY 会怎样？
+### 没有 OpenAI API Key 会怎样？
 
 可以正常启动。
 
@@ -360,19 +335,18 @@ docker compose config
 
 ## 10. 当前限制
 
-当前版本是 MVP，还有这些能力未完成：
+当前版本还有这些能力未完成或待增强：
 
-- inline comments
-- diff 行号映射
+- 更精确的 diff 行号映射
 - finding 去重
 - summary comment 更新而不是每次新增
 - stale head sha 二次检查
 - 仓库白名单
-- secret 检测和脱敏
+- secret 加密存储、检测和脱敏
 - `.gitea-review-bot.yml`
 - PR comment commands
-- React Admin 认证
+- 多管理员和权限管理
 - 成本统计
 - 质量评估集
 
-建议先用测试仓库验证 MVP 闭环，确认稳定后再进入 inline review 和质量治理阶段。
+建议先用测试仓库验证闭环，确认稳定后再进入更细的 inline review 和质量治理阶段。

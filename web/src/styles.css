@@ -23,10 +23,54 @@ button:disabled {
   opacity: 0.65;
 }
 
+input {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+label {
+  color: #334155;
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 6px;
+}
+
+button.secondary {
+  background: #e2e8f0;
+  color: #172033;
+}
+
+button.activeTab {
+  background: #1f6feb;
+  color: white;
+}
+
 .page {
   margin: 0 auto;
   max-width: 1180px;
   padding: 32px;
+}
+
+.page.narrow {
+  max-width: 760px;
+}
+
+.pageActions,
+.headerActions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.pageActions {
+  justify-content: flex-end;
+  margin-bottom: 16px;
 }
 
 .header {
@@ -59,6 +103,15 @@ button:disabled {
   padding: 12px 14px;
 }
 
+.success {
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  color: #166534;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+}
+
 .layout {
   display: grid;
   gap: 18px;
@@ -82,7 +135,8 @@ button:disabled {
   padding: 16px 18px;
 }
 
-.panelHeader h2 {
+.panelHeader h2,
+.formPanel h2 {
   font-size: 16px;
   margin: 0;
 }
@@ -208,6 +262,30 @@ code {
 
 .errorText {
   color: #b91c1c;
+}
+
+.formPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: auto;
+  padding: 20px;
+}
+
+.settingsGrid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.checkbox {
+  align-items: center;
+  flex-direction: row;
+  font-weight: 600;
+}
+
+.checkbox input {
+  width: auto;
 }
 
 .detailActions {
