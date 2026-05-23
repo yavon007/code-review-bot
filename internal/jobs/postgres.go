@@ -38,13 +38,13 @@ func insertDelivery(ctx context.Context, db deliveryExecer, input WebhookDeliver
 		insert into webhook_deliveries (
 			delivery_id, event_name, action, repo_full_name, pr_number, head_sha, sender, signature_valid, status, error_message, job_id
 		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, nullString(input.DeliveryID), input.EventName, input.Action, input.RepoFullName, nullInt(input.PRNumber), input.HeadSHA, input.Sender, input.SignatureValid, status, nullString(input.ErrorMessage), nullInt64(input.JobID))
+	`, nullString(input.DeliveryID), input.EventName, input.Action, nullString(input.RepoFullName), nullInt(input.PRNumber), input.HeadSHA, input.Sender, input.SignatureValid, status, nullString(input.ErrorMessage), nullInt64(input.JobID))
 	return err
 }
 
 func (s *PostgresStore) ListDeliveries(ctx context.Context) ([]WebhookDelivery, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		select id, coalesce(delivery_id, ''), event_name, coalesce(action, ''), repo_full_name, coalesce(pr_number, 0), coalesce(head_sha, ''),
+		select id, coalesce(delivery_id, ''), event_name, coalesce(action, ''), coalesce(repo_full_name, ''), coalesce(pr_number, 0), coalesce(head_sha, ''),
 			coalesce(sender, ''), signature_valid, status, coalesce(error_message, ''), coalesce(job_id, 0), received_at
 		from webhook_deliveries
 		order by received_at desc

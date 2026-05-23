@@ -69,13 +69,24 @@ func main() {
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	defer stopWorker()
 	if settingsStore != nil {
-		go worker.New(store, settingsStore, worker.Options{PollInterval: cfg.WorkerPollInterval}, logger).Run(workerCtx)
-		logger.Info("review worker started")
+		workerConcurrency := cfg.WorkerConcurrency
+		if workerConcurrency <= 0 {
+			workerConcurrency = 1
+		}
+		for range workerConcurrency {
+			go worker.New(store, settingsStore, worker.Options{PollInterval: cfg.WorkerPollInterval}, logger).Run(workerCtx)
+		}
+		logger.Info("review workers started", "count", workerConcurrency)
 	} else {
 		logger.Warn("review worker is disabled without DATABASE_URL")
 	}
 
-	handler := server.New(cfg, store, settingsStore, logger).Handler()
+	appServer, err := server.New(cfg, store, settingsStore, logger)
+	if err != nil {
+		logger.Error("server initialization failed", "error", err)
+		os.Exit(1)
+	}
+	handler := appServer.Handler()
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,

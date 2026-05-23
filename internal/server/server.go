@@ -26,9 +26,12 @@ type Server struct {
 	log           *slog.Logger
 }
 
-func New(cfg config.Config, store jobs.Store, settingsStore *settings.Store, logger *slog.Logger) *Server {
+func New(cfg config.Config, store jobs.Store, settingsStore *settings.Store, logger *slog.Logger) (*Server, error) {
 	secret := cfg.SessionSecret
 	if secret == "" {
+		if settingsStore != nil {
+			return nil, errors.New("SESSION_SECRET is required when database-backed admin is enabled")
+		}
 		secret = sessionSecretFallback(cfg.Port)
 	}
 	s := &Server{
@@ -40,7 +43,7 @@ func New(cfg config.Config, store jobs.Store, settingsStore *settings.Store, log
 		log:           logger,
 	}
 	s.routes()
-	return s
+	return s, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -272,7 +275,7 @@ func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 
 	input, err := webhook.DecodePayload(eventName, deliveryID, body)
 	if err != nil {
-		if errors.Is(err, webhook.ErrUnsupportedEvent) {
+		if errors.Is(err, webhook.ErrUnsupportedEvent) || errors.Is(err, webhook.ErrIgnoredAction) {
 			s.recordDelivery(r, jobs.WebhookDeliveryInput{
 				DeliveryID:     deliveryID,
 				EventName:      eventName,

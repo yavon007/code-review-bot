@@ -9,6 +9,49 @@ import (
 	"code-review-bot/internal/jobs"
 )
 
+func TestOpenAIReviewerFallsBackToChatCompletions(t *testing.T) {
+	var sawChatCompletions bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses":
+			http.NotFound(w, r)
+		case "/chat/completions":
+			sawChatCompletions = true
+			var payload chatCompletionsRequest
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if payload.Model != "test-model" {
+				t.Fatalf("unexpected model: %s", payload.Model)
+			}
+			if payload.ResponseFormat.JSONSchema.Name != "gitea_pr_review" {
+				t.Fatalf("unexpected schema name: %s", payload.ResponseFormat.JSONSchema.Name)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"summary\":\"chat fallback ok\",\"risk_level\":\"low\",\"decision\":\"comment\"}"}}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	reviewer, err := NewOpenAIReviewer(server.URL, "test-key", "test-model")
+	if err != nil {
+		t.Fatalf("NewOpenAIReviewer returned error: %v", err)
+	}
+
+	result, err := reviewer.Review(t.Context(), Input{Job: jobs.Job{RepoFullName: "acme/order-service", PRNumber: 123, HeadSHA: "abc123"}, Diff: "diff --git"})
+	if err != nil {
+		t.Fatalf("Review returned error: %v", err)
+	}
+	if !sawChatCompletions {
+		t.Fatal("expected chat/completions fallback")
+	}
+	if result.Summary != "chat fallback ok" {
+		t.Fatalf("unexpected summary: %s", result.Summary)
+	}
+}
+
 func TestOpenAIReviewerReview(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {

@@ -101,7 +101,7 @@ cp .env.example .env
 ```env
 PORT=8080
 DATABASE_URL=postgres://reviewbot:reviewbot@localhost:5432/reviewbot?sslmode=disable
-SESSION_SECRET=本地可留空，生产建议填写长随机字符串
+SESSION_SECRET=本地使用数据库/admin 时也需要填写；生产必须填写长随机字符串
 ```
 
 Gitea、AI、review 策略等运行期配置在首次打开 Admin 时通过安装向导写入数据库，后续也可以在网页里修改。

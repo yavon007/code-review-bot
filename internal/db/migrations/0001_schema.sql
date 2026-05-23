@@ -4,7 +4,7 @@ create table if not exists webhook_deliveries (
   delivery_id text,
   event_name text not null,
   action text,
-  repo_full_name text not null,
+  repo_full_name text,
   pr_number int,
   head_sha text,
   sender text,

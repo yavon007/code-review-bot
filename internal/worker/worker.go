@@ -45,20 +45,32 @@ func New(store jobs.Store, settingsProvider SettingsProvider, options Options, l
 }
 
 func (w *Worker) Run(ctx context.Context) {
-	if w.options.PollInterval <= 0 {
-		w.options.PollInterval = 5 * time.Second
+	defaultPollInterval := w.options.PollInterval
+	if defaultPollInterval <= 0 {
+		defaultPollInterval = 5 * time.Second
 	}
-
-	ticker := time.NewTicker(w.options.PollInterval)
-	defer ticker.Stop()
 
 	for {
 		w.processOne(ctx)
 
+		pollInterval := defaultPollInterval
+		if appSettings, err := w.loadSettings(ctx); err != nil {
+			w.logger.Error("failed to load settings for worker poll interval", "error", err)
+		} else {
+			pollInterval = appSettings.WorkerPollInterval
+		}
+
+		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }

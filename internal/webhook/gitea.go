@@ -10,7 +10,10 @@ import (
 	"strings"
 )
 
-var ErrUnsupportedEvent = errors.New("unsupported gitea event")
+var (
+	ErrUnsupportedEvent = errors.New("unsupported gitea event")
+	ErrIgnoredAction    = errors.New("ignored gitea pull request action")
+)
 
 type GiteaPayload struct {
 	Action      string      `json:"action"`
@@ -86,6 +89,9 @@ func DecodePayload(eventName string, deliveryID string, body []byte) (ReviewJobI
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return ReviewJobInput{}, err
 	}
+	if !isReviewableAction(eventName, payload.Action) {
+		return ReviewJobInput{}, ErrIgnoredAction
+	}
 
 	prNumber := payload.PullRequest.Index
 	if prNumber == 0 {
@@ -136,6 +142,18 @@ func DecodePayload(eventName string, deliveryID string, body []byte) (ReviewJobI
 		BaseSHA:      payload.PullRequest.Base.Sha,
 		Sender:       sender,
 	}, nil
+}
+
+func isReviewableAction(eventName string, action string) bool {
+	if eventName == "pull_request_sync" {
+		return true
+	}
+	switch action {
+	case "opened", "reopened", "synchronized", "synchronize":
+		return true
+	default:
+		return false
+	}
 }
 
 func decodeSignature(signature string) ([]byte, bool) {
