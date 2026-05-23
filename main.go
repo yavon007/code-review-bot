@@ -42,6 +42,10 @@ func openDatabaseWithRetry(ctx context.Context, databaseURL string, logger *slog
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg := config.Load()
+	if cfg.DatabaseURL != "" && cfg.SessionSecret == "" {
+		logger.Error("SESSION_SECRET is required when database-backed admin is enabled")
+		os.Exit(1)
+	}
 	ctx := context.Background()
 
 	var store jobs.Store = jobs.NewMemoryStore()
