@@ -7,7 +7,7 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
-      SESSION_SECRET: ${SESSION_SECRET:-}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
     expose:
       - "8080"
 

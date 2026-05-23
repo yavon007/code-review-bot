@@ -142,7 +142,7 @@ systemctl reload nginx
 
 ## 6. 重要安全提醒
 
-React Admin 已有内置管理员登录，首次访问会创建第一个管理员。生产环境仍建议设置 `SESSION_SECRET`，并按需叠加 Nginx basic auth 或 IP 限制。
+React Admin 已有内置管理员登录，首次访问会创建第一个管理员。生产环境必须设置 `SESSION_SECRET`，否则服务会拒绝启动；也可以按需叠加 Nginx basic auth 或 IP 限制。
 
 如果域名直接暴露到公网，可以选择额外限制：
 

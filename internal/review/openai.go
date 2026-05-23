@@ -50,6 +50,14 @@ func TestOpenAIConnection(ctx context.Context, baseURL string, apiKey string, mo
 }
 
 func (r *OpenAIReviewer) Review(ctx context.Context, input Input) (Result, error) {
+	result, err := r.reviewWithResponses(ctx, input)
+	if shouldFallbackToChatCompletions(err) {
+		return r.reviewWithChatCompletions(ctx, input)
+	}
+	return result, err
+}
+
+func (r *OpenAIReviewer) reviewWithResponses(ctx context.Context, input Input) (Result, error) {
 	request := responsesRequest{
 		Model: r.model,
 		Input: []responsesMessage{
@@ -72,33 +80,45 @@ func (r *OpenAIReviewer) Review(ctx context.Context, input Input) (Result, error
 	}
 
 	var response responsesResponse
-	if err := r.do(ctx, request, &response); err != nil {
+	if err := r.doResponses(ctx, request, &response); err != nil {
 		return Result{}, err
 	}
+	return parseReviewResult(response.text())
+}
 
-	text := response.OutputText
-	if text == "" {
-		text = response.firstText()
-	}
-	if text == "" {
-		return Result{}, errors.New("model returned empty review")
-	}
-
-	var structured Result
-	if err := json.Unmarshal([]byte(text), &structured); err != nil {
-		return Result{}, fmt.Errorf("decode model review: %w", err)
-	}
-	if strings.TrimSpace(structured.Summary) == "" {
-		return Result{}, errors.New("model returned empty summary")
-	}
-	if structured.Findings == nil {
-		structured.Findings = []Finding{}
+func (r *OpenAIReviewer) reviewWithChatCompletions(ctx context.Context, input Input) (Result, error) {
+	request := chatCompletionsRequest{
+		Model: r.model,
+		Messages: []chatMessage{
+			{Role: "system", Content: reviewPolicy},
+			{Role: "user", Content: buildPrompt(input)},
+		},
+		ResponseFormat: chatResponseFormat{
+			Type: "json_schema",
+			JSONSchema: chatJSONSchema{
+				Name:   "gitea_pr_review",
+				Strict: true,
+				Schema: summarySchema(),
+			},
+		},
 	}
 
-	return structured, nil
+	var response chatCompletionsResponse
+	if err := r.doChatCompletions(ctx, request, &response); err != nil {
+		return Result{}, err
+	}
+	return parseReviewResult(response.text())
 }
 
 func (r *OpenAIReviewer) testModel(ctx context.Context) error {
+	if err := r.testModelWithResponses(ctx); shouldFallbackToChatCompletions(err) {
+		return r.testModelWithChatCompletions(ctx)
+	} else {
+		return err
+	}
+}
+
+func (r *OpenAIReviewer) testModelWithResponses(ctx context.Context) error {
 	request := responsesRequest{
 		Model: r.model,
 		Input: []responsesMessage{
@@ -111,48 +131,55 @@ func (r *OpenAIReviewer) testModel(ctx context.Context) error {
 			Type:   "json_schema",
 			Name:   "connection_test",
 			Strict: true,
-			Schema: map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"required":             []string{"ok"},
-				"properties": map[string]any{
-					"ok": map[string]any{"type": "boolean"},
-				},
-			},
+			Schema: connectionTestSchema(),
 		}},
 		Store: false,
 	}
 	var response responsesResponse
-	if err := r.do(ctx, request, &response); err != nil {
+	if err := r.doResponses(ctx, request, &response); err != nil {
 		return err
 	}
-	text := response.OutputText
-	if text == "" {
-		text = response.firstText()
-	}
-	if text == "" {
-		return errors.New("model returned empty connection test")
-	}
-	var result struct {
-		OK bool `json:"ok"`
-	}
-	if err := json.Unmarshal([]byte(text), &result); err != nil {
-		return fmt.Errorf("decode model connection test: %w", err)
-	}
-	if !result.OK {
-		return errors.New("model connection test returned ok=false")
-	}
-	return nil
+	return parseConnectionTest(response.text())
 }
 
-func (r *OpenAIReviewer) do(ctx context.Context, input responsesRequest, output *responsesResponse) error {
+func (r *OpenAIReviewer) testModelWithChatCompletions(ctx context.Context) error {
+	request := chatCompletionsRequest{
+		Model: r.model,
+		Messages: []chatMessage{
+			{Role: "user", Content: "Return a JSON object with ok set to true."},
+		},
+		ResponseFormat: chatResponseFormat{
+			Type: "json_schema",
+			JSONSchema: chatJSONSchema{
+				Name:   "connection_test",
+				Strict: true,
+				Schema: connectionTestSchema(),
+			},
+		},
+	}
+	var response chatCompletionsResponse
+	if err := r.doChatCompletions(ctx, request, &response); err != nil {
+		return err
+	}
+	return parseConnectionTest(response.text())
+}
+
+func (r *OpenAIReviewer) doResponses(ctx context.Context, input responsesRequest, output *responsesResponse) error {
+	return r.doJSON(ctx, "responses", input, output)
+}
+
+func (r *OpenAIReviewer) doChatCompletions(ctx context.Context, input chatCompletionsRequest, output *chatCompletionsResponse) error {
+	return r.doJSON(ctx, "chat/completions", input, output)
+}
+
+func (r *OpenAIReviewer) doJSON(ctx context.Context, endpoint string, input any, output any) error {
 	body, err := json.Marshal(input)
 	if err != nil {
 		return err
 	}
 
 	requestURL := *r.baseURL
-	requestURL.Path = path.Join(requestURL.Path, "responses")
+	requestURL.Path = path.Join(requestURL.Path, endpoint)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(body))
 	if err != nil {
@@ -169,9 +196,70 @@ func (r *OpenAIReviewer) do(ctx context.Context, input responsesRequest, output 
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("model api returned status %d", res.StatusCode)
+		return apiStatusError{statusCode: res.StatusCode}
 	}
 	return json.NewDecoder(res.Body).Decode(output)
+}
+
+type apiStatusError struct {
+	statusCode int
+}
+
+func (e apiStatusError) Error() string {
+	return fmt.Sprintf("model api returned status %d", e.statusCode)
+}
+
+func shouldFallbackToChatCompletions(err error) bool {
+	var statusErr apiStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	return statusErr.statusCode == http.StatusNotFound || statusErr.statusCode == http.StatusMethodNotAllowed || statusErr.statusCode == http.StatusNotImplemented
+}
+
+func parseReviewResult(text string) (Result, error) {
+	if text == "" {
+		return Result{}, errors.New("model returned empty review")
+	}
+
+	var structured Result
+	if err := json.Unmarshal([]byte(text), &structured); err != nil {
+		return Result{}, fmt.Errorf("decode model review: %w", err)
+	}
+	if strings.TrimSpace(structured.Summary) == "" {
+		return Result{}, errors.New("model returned empty summary")
+	}
+	if structured.Findings == nil {
+		structured.Findings = []Finding{}
+	}
+	return structured, nil
+}
+
+func parseConnectionTest(text string) error {
+	if text == "" {
+		return errors.New("model returned empty connection test")
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return fmt.Errorf("decode model connection test: %w", err)
+	}
+	if !result.OK {
+		return errors.New("model connection test returned ok=false")
+	}
+	return nil
+}
+
+func connectionTestSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"ok"},
+		"properties": map[string]any{
+			"ok": map[string]any{"type": "boolean"},
+		},
+	}
 }
 
 type responsesRequest struct {
@@ -211,12 +299,56 @@ type responsesResponse struct {
 	} `json:"output"`
 }
 
+func (r responsesResponse) text() string {
+	if r.OutputText != "" {
+		return r.OutputText
+	}
+	return r.firstText()
+}
+
 func (r responsesResponse) firstText() string {
 	for _, output := range r.Output {
 		for _, content := range output.Content {
 			if content.Text != "" {
 				return content.Text
 			}
+		}
+	}
+	return ""
+}
+
+type chatCompletionsRequest struct {
+	Model          string             `json:"model"`
+	Messages       []chatMessage      `json:"messages"`
+	ResponseFormat chatResponseFormat `json:"response_format"`
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatResponseFormat struct {
+	Type       string         `json:"type"`
+	JSONSchema chatJSONSchema `json:"json_schema"`
+}
+
+type chatJSONSchema struct {
+	Name   string         `json:"name"`
+	Strict bool           `json:"strict"`
+	Schema map[string]any `json:"schema"`
+}
+
+type chatCompletionsResponse struct {
+	Choices []struct {
+		Message chatMessage `json:"message"`
+	} `json:"choices"`
+}
+
+func (r chatCompletionsResponse) text() string {
+	for _, choice := range r.Choices {
+		if choice.Message.Content != "" {
+			return choice.Message.Content
 		}
 	}
 	return ""

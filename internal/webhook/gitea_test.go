@@ -70,6 +70,20 @@ func TestDecodePayload(t *testing.T) {
 	}
 }
 
+func TestDecodePayloadIgnoredAction(t *testing.T) {
+	body := []byte(`{
+		"action":"closed",
+		"repository":{"full_name":"acme/order-service","name":"order-service","owner":{"username":"acme"}},
+		"pull_request":{"index":123,"head":{"sha":"abc123"}},
+		"sender":{"username":"alice"}
+	}`)
+
+	_, err := DecodePayload("pull_request", "delivery-1", body)
+	if err != ErrIgnoredAction {
+		t.Fatalf("expected ErrIgnoredAction, got %v", err)
+	}
+}
+
 func TestDecodePayloadUnsupportedEvent(t *testing.T) {
 	_, err := DecodePayload("push", "delivery-1", []byte(`{}`))
 	if err != ErrUnsupportedEvent {
