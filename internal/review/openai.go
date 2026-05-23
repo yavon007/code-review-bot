@@ -41,6 +41,14 @@ func NewOpenAIReviewer(baseURL string, apiKey string, model string) (*OpenAIRevi
 	}, nil
 }
 
+func TestOpenAIConnection(ctx context.Context, baseURL string, apiKey string, model string) error {
+	reviewer, err := NewOpenAIReviewer(baseURL, apiKey, model)
+	if err != nil {
+		return err
+	}
+	return reviewer.testModel(ctx)
+}
+
 func (r *OpenAIReviewer) Review(ctx context.Context, input Input) (Result, error) {
 	request := responsesRequest{
 		Model: r.model,
@@ -88,6 +96,53 @@ func (r *OpenAIReviewer) Review(ctx context.Context, input Input) (Result, error
 	}
 
 	return structured, nil
+}
+
+func (r *OpenAIReviewer) testModel(ctx context.Context) error {
+	request := responsesRequest{
+		Model: r.model,
+		Input: []responsesMessage{
+			{
+				Role:    "user",
+				Content: []responsesContent{{Type: "input_text", Text: "Return a JSON object with ok set to true."}},
+			},
+		},
+		Text: responsesText{Format: responsesFormat{
+			Type:   "json_schema",
+			Name:   "connection_test",
+			Strict: true,
+			Schema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"ok"},
+				"properties": map[string]any{
+					"ok": map[string]any{"type": "boolean"},
+				},
+			},
+		}},
+		Store: false,
+	}
+	var response responsesResponse
+	if err := r.do(ctx, request, &response); err != nil {
+		return err
+	}
+	text := response.OutputText
+	if text == "" {
+		text = response.firstText()
+	}
+	if text == "" {
+		return errors.New("model returned empty connection test")
+	}
+	var result struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return fmt.Errorf("decode model connection test: %w", err)
+	}
+	if !result.OK {
+		return errors.New("model connection test returned ok=false")
+	}
+	return nil
 }
 
 func (r *OpenAIReviewer) do(ctx context.Context, input responsesRequest, output *responsesResponse) error {

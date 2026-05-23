@@ -31,6 +31,9 @@ type AppSettings struct {
 	ReviewFailOnHigh         bool          `json:"review_fail_on_high"`
 	ReviewPostInlineComments bool          `json:"review_post_inline_comments"`
 	ReviewMaxFindings        int           `json:"review_max_findings"`
+	ReviewMaxAttempts        int           `json:"review_max_attempts"`
+	ReviewStaleTimeout       time.Duration `json:"-"`
+	ReviewStaleTimeoutText   string        `json:"review_stale_timeout"`
 	WorkerPollInterval       time.Duration `json:"-"`
 	WorkerPollIntervalText   string        `json:"worker_poll_interval"`
 }
@@ -48,6 +51,8 @@ type PublicSettings struct {
 	ReviewFailOnHigh         bool     `json:"review_fail_on_high"`
 	ReviewPostInlineComments bool     `json:"review_post_inline_comments"`
 	ReviewMaxFindings        int      `json:"review_max_findings"`
+	ReviewMaxAttempts        int      `json:"review_max_attempts"`
+	ReviewStaleTimeout       string   `json:"review_stale_timeout"`
 	WorkerPollInterval       string   `json:"worker_poll_interval"`
 }
 
@@ -74,6 +79,9 @@ func FromConfig(cfg config.Config) AppSettings {
 		ReviewFailOnHigh:         cfg.ReviewFailOnHigh,
 		ReviewPostInlineComments: cfg.ReviewPostInlineComments,
 		ReviewMaxFindings:        cfg.ReviewMaxFindings,
+		ReviewMaxAttempts:        3,
+		ReviewStaleTimeout:       10 * time.Minute,
+		ReviewStaleTimeoutText:   (10 * time.Minute).String(),
 		WorkerPollInterval:       cfg.WorkerPollInterval,
 		WorkerPollIntervalText:   cfg.WorkerPollInterval.String(),
 	}
@@ -98,6 +106,21 @@ func (s AppSettings) Normalize() AppSettings {
 	if s.ReviewMaxFindings <= 0 {
 		s.ReviewMaxFindings = 20
 	}
+	if s.ReviewMaxAttempts <= 0 {
+		s.ReviewMaxAttempts = 3
+	}
+	if s.ReviewStaleTimeoutText != "" {
+		if parsed, err := time.ParseDuration(s.ReviewStaleTimeoutText); err == nil {
+			s.ReviewStaleTimeout = parsed
+		}
+	}
+	if s.ReviewStaleTimeout <= 0 {
+		s.ReviewStaleTimeout = 10 * time.Minute
+	}
+	if s.ReviewStaleTimeout < 15*time.Second {
+		s.ReviewStaleTimeout = 15 * time.Second
+	}
+	s.ReviewStaleTimeoutText = s.ReviewStaleTimeout.String()
 	if s.WorkerPollIntervalText != "" {
 		if parsed, err := time.ParseDuration(s.WorkerPollIntervalText); err == nil {
 			s.WorkerPollInterval = parsed
@@ -125,6 +148,8 @@ func (s AppSettings) Public() PublicSettings {
 		ReviewFailOnHigh:         s.ReviewFailOnHigh,
 		ReviewPostInlineComments: s.ReviewPostInlineComments,
 		ReviewMaxFindings:        s.ReviewMaxFindings,
+		ReviewMaxAttempts:        s.ReviewMaxAttempts,
+		ReviewStaleTimeout:       s.ReviewStaleTimeout.String(),
 		WorkerPollInterval:       s.WorkerPollInterval.String(),
 	}
 }
@@ -268,6 +293,8 @@ func settingValues(settings AppSettings) map[string]string {
 		"review_fail_on_high":         strconv.FormatBool(settings.ReviewFailOnHigh),
 		"review_post_inline_comments": strconv.FormatBool(settings.ReviewPostInlineComments),
 		"review_max_findings":         strconv.Itoa(settings.ReviewMaxFindings),
+		"review_max_attempts":         strconv.Itoa(settings.ReviewMaxAttempts),
+		"review_stale_timeout":        settings.ReviewStaleTimeout.String(),
 		"worker_poll_interval":        settings.WorkerPollInterval.String(),
 	}
 }
@@ -281,6 +308,7 @@ func applyValues(settings *AppSettings, values map[string]string) {
 	settings.OpenAIBaseURL = valueOrDefault(values, "openai_base_url", settings.OpenAIBaseURL)
 	settings.ReviewModel = valueOrDefault(values, "review_model", settings.ReviewModel)
 	settings.ReviewExcludePaths = splitList(valueOrDefault(values, "review_exclude_paths", strings.Join(settings.ReviewExcludePaths, ",")))
+	settings.ReviewStaleTimeoutText = valueOrDefault(values, "review_stale_timeout", settings.ReviewStaleTimeout.String())
 	settings.WorkerPollIntervalText = valueOrDefault(values, "worker_poll_interval", settings.WorkerPollInterval.String())
 	if value, ok := values["review_max_diff_bytes"]; ok {
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
@@ -300,6 +328,11 @@ func applyValues(settings *AppSettings, values map[string]string) {
 	if value, ok := values["review_max_findings"]; ok {
 		if parsed, err := strconv.Atoi(value); err == nil {
 			settings.ReviewMaxFindings = parsed
+		}
+	}
+	if value, ok := values["review_max_attempts"]; ok {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			settings.ReviewMaxAttempts = parsed
 		}
 	}
 }

@@ -118,3 +118,72 @@ func TestCreateIssueComment(t *testing.T) {
 		t.Fatalf("unexpected comment id: %d", comment.ID)
 	}
 }
+
+func TestListIssueComments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/acme/order-service/issues/123/comments" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			comments := make([]IssueComment, 50)
+			for i := range comments {
+				comments[i] = IssueComment{ID: int64(i + 1), Body: "older comment"}
+			}
+			_ = json.NewEncoder(w).Encode(comments)
+		case "2":
+			_ = json.NewEncoder(w).Encode([]IssueComment{{ID: 51, Body: "review summary"}})
+		default:
+			t.Fatalf("unexpected page: %s", r.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "test-token")
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+
+	comments, err := client.ListIssueComments(t.Context(), "acme", "order-service", 123)
+	if err != nil {
+		t.Fatalf("ListIssueComments returned error: %v", err)
+	}
+	if len(comments) != 51 || comments[50].ID != 51 || comments[50].Body != "review summary" {
+		t.Fatalf("unexpected comments: %+v", comments)
+	}
+}
+
+func TestUpdateIssueComment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/acme/order-service/issues/comments/42" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodPatch {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if payload["body"] != "updated review summary" {
+			t.Fatalf("unexpected body: %s", payload["body"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":42,"html_url":"https://gitea.local/comment/42","body":"updated review summary"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "test-token")
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+
+	comment, err := client.UpdateIssueComment(t.Context(), "acme", "order-service", 42, "updated review summary")
+	if err != nil {
+		t.Fatalf("UpdateIssueComment returned error: %v", err)
+	}
+	if comment.ID != 42 || comment.Body != "updated review summary" {
+		t.Fatalf("unexpected comment: %+v", comment)
+	}
+}

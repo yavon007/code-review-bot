@@ -30,6 +30,7 @@ type CommitStatus struct {
 type IssueComment struct {
 	ID      int64  `json:"id"`
 	HTMLURL string `json:"html_url"`
+	Body    string `json:"body"`
 }
 
 type InlineReviewComment struct {
@@ -89,6 +90,22 @@ func (c *Client) CreateCommitStatus(ctx context.Context, owner string, repo stri
 	return c.doJSON(ctx, http.MethodPost, endpoint, status, nil)
 }
 
+func (c *Client) ListIssueComments(ctx context.Context, owner string, repo string, prNumber int) ([]IssueComment, error) {
+	const pageSize = 50
+	result := make([]IssueComment, 0)
+	for page := 1; ; page++ {
+		endpoint := fmt.Sprintf("%s?page=%d&limit=%d", c.apiPath("repos", owner, repo, "issues", strconv.Itoa(prNumber), "comments"), page, pageSize)
+		var comments []IssueComment
+		if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &comments); err != nil {
+			return nil, err
+		}
+		result = append(result, comments...)
+		if len(comments) < pageSize {
+			return result, nil
+		}
+	}
+}
+
 func (c *Client) CreateIssueComment(ctx context.Context, owner string, repo string, prNumber int, body string) (IssueComment, error) {
 	endpoint := c.apiPath("repos", owner, repo, "issues", strconv.Itoa(prNumber), "comments")
 	payload := map[string]string{"body": body}
@@ -97,6 +114,20 @@ func (c *Client) CreateIssueComment(ctx context.Context, owner string, repo stri
 		return IssueComment{}, err
 	}
 	return comment, nil
+}
+
+func (c *Client) UpdateIssueComment(ctx context.Context, owner string, repo string, commentID int64, body string) (IssueComment, error) {
+	endpoint := c.apiPath("repos", owner, repo, "issues", "comments", strconv.FormatInt(commentID, 10))
+	payload := map[string]string{"body": body}
+	var comment IssueComment
+	if err := c.doJSON(ctx, http.MethodPatch, endpoint, payload, &comment); err != nil {
+		return IssueComment{}, err
+	}
+	return comment, nil
+}
+
+func (c *Client) TestConnection(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodGet, c.apiPath("user"), nil, nil)
 }
 
 func (c *Client) CreatePullReviewComment(ctx context.Context, owner string, repo string, prNumber int, headSHA string, comment InlineReviewComment) (IssueComment, error) {
@@ -198,7 +229,9 @@ func (c *Client) doRaw(ctx context.Context, method string, endpoint string, maxB
 
 func (c *Client) newRequest(ctx context.Context, method string, endpoint string, body io.Reader) (*http.Request, error) {
 	requestURL := *c.baseURL
-	requestURL.Path = path.Join(requestURL.Path, endpoint)
+	endpointPath, rawQuery, _ := strings.Cut(endpoint, "?")
+	requestURL.Path = path.Join(requestURL.Path, endpointPath)
+	requestURL.RawQuery = rawQuery
 
 	req, err := http.NewRequestWithContext(ctx, method, requestURL.String(), body)
 	if err != nil {

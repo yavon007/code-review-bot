@@ -36,6 +36,22 @@ type Finding = {
   post_error?: string;
 };
 
+type WebhookDelivery = {
+  id: number;
+  delivery_id: string;
+  event_name: string;
+  action: string;
+  repo_full_name: string;
+  pr_number?: number;
+  head_sha: string;
+  sender: string;
+  signature_valid: boolean;
+  status: string;
+  error_message?: string;
+  job_id?: number;
+  received_at: string;
+};
+
 type RuntimeSettings = {
   gitea_base_url: string;
   gitea_token?: string;
@@ -49,6 +65,8 @@ type RuntimeSettings = {
   review_fail_on_high: boolean;
   review_post_inline_comments: boolean;
   review_max_findings: number;
+  review_max_attempts: number;
+  review_stale_timeout: string;
   worker_poll_interval: string;
   has_gitea_token?: boolean;
   has_gitea_webhook_secret?: boolean;
@@ -63,8 +81,12 @@ type FindingsResponse = {
   findings: Finding[];
 };
 
+type DeliveriesResponse = {
+  deliveries: WebhookDelivery[];
+};
+
 type Mode = 'loading' | 'setup' | 'login' | 'app';
-type AppTab = 'jobs' | 'settings';
+type AppTab = 'jobs' | 'deliveries' | 'settings';
 
 const defaultSettings: RuntimeSettings = {
   gitea_base_url: '',
@@ -79,6 +101,8 @@ const defaultSettings: RuntimeSettings = {
   review_fail_on_high: true,
   review_post_inline_comments: false,
   review_max_findings: 20,
+  review_max_attempts: 3,
+  review_stale_timeout: '10m0s',
   worker_poll_interval: '5s',
 };
 
@@ -127,17 +151,18 @@ export function App() {
       <header className="header">
         <div>
           <p className="eyebrow">Gitea PR Code Review Bot</p>
-          <h1>{tab === 'jobs' ? 'Review Jobs' : '系统配置'}</h1>
+          <h1>{tab === 'jobs' ? 'Review Jobs' : tab === 'deliveries' ? 'Webhook Deliveries' : '系统配置'}</h1>
         </div>
         <div className="headerActions">
           <button className={tab === 'jobs' ? 'secondary activeTab' : 'secondary'} onClick={() => setTab('jobs')}>任务</button>
+          <button className={tab === 'deliveries' ? 'secondary activeTab' : 'secondary'} onClick={() => setTab('deliveries')}>Webhook</button>
           <button className={tab === 'settings' ? 'secondary activeTab' : 'secondary'} onClick={() => setTab('settings')}>配置</button>
           <button onClick={() => logout().finally(() => setMode('login'))}>退出</button>
         </div>
       </header>
 
       {error ? <div className="alert">{error}</div> : null}
-      {tab === 'jobs' ? <JobsPage /> : <SettingsPage />}
+      {tab === 'jobs' ? <JobsPage /> : tab === 'deliveries' ? <DeliveriesPage /> : <SettingsPage />}
     </main>
   );
 }
@@ -310,6 +335,60 @@ function JobsPage() {
   );
 }
 
+function DeliveriesPage() {
+  const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadDeliveries() {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/deliveries');
+      if (!response.ok) {
+        throw new Error(`请求失败：${response.status}`);
+      }
+      const data = (await response.json()) as DeliveriesResponse;
+      setDeliveries(data.deliveries ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载 webhook delivery 失败');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadDeliveries();
+  }, []);
+
+  return (
+    <>
+      <div className="pageActions"><button onClick={() => void loadDeliveries()} disabled={isLoading}>{isLoading ? '刷新中...' : '刷新'}</button></div>
+      {error ? <div className="alert">{error}</div> : null}
+      <section className="panel">
+        <div className="panelHeader"><h2>Webhook 记录</h2><span>{deliveries.length} 条</span></div>
+        {deliveries.length === 0 && !isLoading ? <p className="empty">暂无 webhook delivery</p> : null}
+        <div className="findingList">
+          {deliveries.map((delivery) => (
+            <article key={delivery.id} className="finding">
+              <div className="findingTopline"><strong>{delivery.repo_full_name || '-'}</strong><StatusBadge status={delivery.status} /></div>
+              <small>
+                {delivery.event_name}{delivery.action ? ` / ${delivery.action}` : ''}
+                {delivery.pr_number ? ` · PR #${delivery.pr_number}` : ''}
+                {delivery.job_id ? ` · job ${delivery.job_id}` : ''}
+                {delivery.sender ? ` · ${delivery.sender}` : ''}
+                {` · ${new Date(delivery.received_at).toLocaleString()}`}
+              </small>
+              <p><code>{delivery.delivery_id}</code>{delivery.head_sha ? ` · ${shortSha(delivery.head_sha)}` : ''}</p>
+              {delivery.error_message ? <p className="errorText">{delivery.error_message}</p> : null}
+            </article>
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
 function SettingsPage() {
   const [settings, setSettings] = useState<RuntimeSettings>(defaultSettings);
   const [error, setError] = useState<string | null>(null);
@@ -351,6 +430,26 @@ function SettingsPage() {
     setMessage('配置已保存');
   }
 
+  async function testSettings(kind: 'gitea' | 'openai') {
+    const label = kind === 'gitea' ? 'Gitea' : 'OpenAI';
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/settings/test-${kind}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(normalizeSettings(settings)),
+      });
+      if (!response.ok) {
+        setError(`${label} 连通性测试失败：${response.status}`);
+        return;
+      }
+      setMessage(`${label} 连通性测试通过`);
+    } catch (error) {
+      setError(`${label} 连通性测试失败：${error instanceof Error ? error.message : '网络错误'}`);
+    }
+  }
+
   if (isLoading) {
     return <p className="empty">加载配置中...</p>;
   }
@@ -360,7 +459,11 @@ function SettingsPage() {
       {error ? <div className="alert">{error}</div> : null}
       {message ? <div className="success">{message}</div> : null}
       <SettingsFields settings={settings} onChange={setSettings} sensitivePlaceholder="留空则保留当前值" />
-      <button>保存配置</button>
+      <div className="detailActions">
+        <button type="button" className="secondary" onClick={() => void testSettings('gitea')}>测试 Gitea</button>
+        <button type="button" className="secondary" onClick={() => void testSettings('openai')}>测试 OpenAI</button>
+        <button>保存配置</button>
+      </div>
     </form>
   );
 }
@@ -384,6 +487,8 @@ function SettingsFields({ settings, onChange, sensitivePlaceholder }: { settings
       <label>Max Diff Bytes<input type="number" value={settings.review_max_diff_bytes} onChange={(event) => patch({ review_max_diff_bytes: Number(event.target.value) })} /></label>
       <label>Exclude Paths<input value={excludePathsText} onChange={(event) => patch({ review_exclude_paths: splitList(event.target.value) })} /></label>
       <label>Max Findings<input type="number" value={settings.review_max_findings} onChange={(event) => patch({ review_max_findings: Number(event.target.value) })} /></label>
+      <label>Max Attempts<input type="number" value={settings.review_max_attempts} onChange={(event) => patch({ review_max_attempts: Number(event.target.value) })} /></label>
+      <label>Stale Timeout<input value={settings.review_stale_timeout} onChange={(event) => patch({ review_stale_timeout: event.target.value })} /></label>
       <label>Worker Poll Interval<input value={settings.worker_poll_interval} onChange={(event) => patch({ worker_poll_interval: event.target.value })} /></label>
       <label className="checkbox"><input type="checkbox" checked={settings.review_fail_on_high} onChange={(event) => patch({ review_fail_on_high: event.target.checked })} />High risk 设置 failure</label>
       <label className="checkbox"><input type="checkbox" checked={settings.review_post_inline_comments} onChange={(event) => patch({ review_post_inline_comments: event.target.checked })} />发布 inline comments</label>
@@ -491,6 +596,7 @@ function normalizeSettings(settings: RuntimeSettings) {
     ...settings,
     review_max_diff_bytes: Number(settings.review_max_diff_bytes) || defaultSettings.review_max_diff_bytes,
     review_max_findings: Number(settings.review_max_findings) || defaultSettings.review_max_findings,
+    review_max_attempts: Number(settings.review_max_attempts) || defaultSettings.review_max_attempts,
     review_exclude_paths: settings.review_exclude_paths,
   };
 }

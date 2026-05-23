@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"code-review-bot/internal/config"
+	"code-review-bot/internal/gitea"
 	"code-review-bot/internal/jobs"
+	"code-review-bot/internal/review"
 	"code-review-bot/internal/settings"
 	"code-review-bot/internal/webhook"
 )
@@ -55,6 +57,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/me", s.handleMe)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("POST /api/settings", s.handleSaveSettings)
+	s.mux.HandleFunc("POST /api/settings/test-gitea", s.handleTestGiteaSettings)
+	s.mux.HandleFunc("POST /api/settings/test-openai", s.handleTestOpenAISettings)
+	s.mux.HandleFunc("GET /api/deliveries", s.handleListDeliveries)
 	s.mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	s.mux.HandleFunc("GET /api/jobs/{id}/findings", s.handleListFindings)
 	s.mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
@@ -185,6 +190,51 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"settings": appSettings.Public()})
 }
 
+func (s *Server) handleTestGiteaSettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAuth(w, r); !ok {
+		return
+	}
+	appSettings, err := s.decodeSettingsPayload(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid settings payload")
+		return
+	}
+	if appSettings.GiteaBaseURL == "" || appSettings.GiteaToken == "" {
+		writeError(w, http.StatusBadRequest, "gitea base url and token are required")
+		return
+	}
+	client, err := gitea.NewClient(appSettings.GiteaBaseURL, appSettings.GiteaToken)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid gitea base url")
+		return
+	}
+	if err := client.TestConnection(r.Context()); err != nil {
+		writeError(w, http.StatusBadGateway, "gitea connection test failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleTestOpenAISettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAuth(w, r); !ok {
+		return
+	}
+	appSettings, err := s.decodeSettingsPayload(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid settings payload")
+		return
+	}
+	if appSettings.OpenAIBaseURL == "" || appSettings.OpenAIAPIKey == "" || appSettings.ReviewModel == "" {
+		writeError(w, http.StatusBadRequest, "openai base url, api key and model are required")
+		return
+	}
+	if err := review.TestOpenAIConnection(r.Context(), appSettings.OpenAIBaseURL, appSettings.OpenAIAPIKey, appSettings.ReviewModel); err != nil {
+		writeError(w, http.StatusBadGateway, "openai connection test failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 	appSettings, err := s.currentSettings(r)
 	if err != nil {
@@ -208,6 +258,13 @@ func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 	hubSignature := r.Header.Get("X-Hub-Signature-256")
 
 	if !webhook.VerifyGiteaSignature(appSettings.GiteaWebhookSecret, body, signature, hubSignature) {
+		s.recordDelivery(r, jobs.WebhookDeliveryInput{
+			DeliveryID:     deliveryID,
+			EventName:      eventName,
+			SignatureValid: false,
+			Status:         "invalid_signature",
+			ErrorMessage:   "invalid signature",
+		})
 		s.log.Warn("rejected gitea webhook with invalid signature", "event", eventName, "delivery_id", deliveryID)
 		writeError(w, http.StatusUnauthorized, "invalid signature")
 		return
@@ -216,14 +273,29 @@ func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 	input, err := webhook.DecodePayload(eventName, deliveryID, body)
 	if err != nil {
 		if errors.Is(err, webhook.ErrUnsupportedEvent) {
+			s.recordDelivery(r, jobs.WebhookDeliveryInput{
+				DeliveryID:     deliveryID,
+				EventName:      eventName,
+				SignatureValid: true,
+				Status:         "ignored",
+				ErrorMessage:   err.Error(),
+			})
 			writeJSON(w, http.StatusAccepted, map[string]string{"status": "ignored"})
 			return
 		}
+		s.recordDelivery(r, jobs.WebhookDeliveryInput{
+			DeliveryID:     deliveryID,
+			EventName:      eventName,
+			SignatureValid: true,
+			Status:         "invalid_payload",
+			ErrorMessage:   err.Error(),
+		})
 		writeError(w, http.StatusBadRequest, "invalid webhook payload")
 		return
 	}
 
 	if input.Sender == appSettings.BotName {
+		s.recordDelivery(r, deliveryInput(input, "ignored_bot_event", 0, ""))
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "ignored_bot_event"})
 		return
 	}
@@ -231,15 +303,51 @@ func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 	job, err := s.jobs.Create(r.Context(), input)
 	if err != nil {
 		if errors.Is(err, jobs.ErrDuplicateJob) {
+			s.recordDelivery(r, deliveryInput(input, "duplicate", job.ID, ""))
 			writeJSON(w, http.StatusAccepted, map[string]any{"status": "duplicate", "job": job})
 			return
 		}
+		s.recordDelivery(r, deliveryInput(input, "error", 0, err.Error()))
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
 
 	s.log.Info("queued review job", "job_id", job.ID, "repo", job.RepoFullName, "pr", job.PRNumber, "head_sha", job.HeadSHA)
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "queued", "job": job})
+}
+
+func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAuth(w, r); !ok {
+		return
+	}
+	deliveries, err := s.jobs.ListDeliveries(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list deliveries")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deliveries": deliveries})
+}
+
+func (s *Server) recordDelivery(r *http.Request, input jobs.WebhookDeliveryInput) {
+	if err := s.jobs.RecordDelivery(r.Context(), input); err != nil {
+		s.log.Warn("failed to record webhook delivery", "delivery_id", input.DeliveryID, "status", input.Status, "error", err)
+	}
+}
+
+func deliveryInput(input webhook.ReviewJobInput, status string, jobID int64, message string) jobs.WebhookDeliveryInput {
+	return jobs.WebhookDeliveryInput{
+		DeliveryID:     input.DeliveryID,
+		EventName:      input.EventName,
+		Action:         input.Action,
+		RepoFullName:   input.RepoFullName,
+		PRNumber:       input.PRNumber,
+		HeadSHA:        input.HeadSHA,
+		Sender:         input.Sender,
+		SignatureValid: true,
+		Status:         status,
+		ErrorMessage:   message,
+		JobID:          jobID,
+	}
 }
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
@@ -323,6 +431,27 @@ func (s *Server) currentSettings(r *http.Request) (settings.AppSettings, error) 
 		return settings.FromConfig(s.cfg).Normalize(), nil
 	}
 	return s.settings.Load(r.Context())
+}
+
+func (s *Server) decodeSettingsPayload(r *http.Request) (settings.AppSettings, error) {
+	current, err := s.currentSettings(r)
+	if err != nil {
+		return settings.AppSettings{}, err
+	}
+	var request settings.AppSettings
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		return settings.AppSettings{}, err
+	}
+	if request.GiteaToken == "" {
+		request.GiteaToken = current.GiteaToken
+	}
+	if request.GiteaWebhookSecret == "" {
+		request.GiteaWebhookSecret = current.GiteaWebhookSecret
+	}
+	if request.OpenAIAPIKey == "" {
+		request.OpenAIAPIKey = current.OpenAIAPIKey
+	}
+	return request.Normalize(), nil
 }
 
 func parseJobID(w http.ResponseWriter, r *http.Request) (int64, bool) {
