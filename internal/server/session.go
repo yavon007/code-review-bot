@@ -14,13 +14,14 @@ import (
 const sessionCookieName = "reviewbot_session"
 
 type sessionPayload struct {
-	UserID int64 `json:"user_id"`
-	Exp    int64 `json:"exp"`
+	UserID         int64 `json:"user_id"`
+	Exp            int64 `json:"exp"`
+	SessionVersion int   `json:"session_version"`
 }
 
-func setSessionCookie(w http.ResponseWriter, secret string, userID int64) {
+func setSessionCookie(w http.ResponseWriter, secret string, userID int64, sessionVersion int) {
 	expires := time.Now().Add(7 * 24 * time.Hour)
-	payload := sessionPayload{UserID: userID, Exp: expires.Unix()}
+	payload := sessionPayload{UserID: userID, Exp: expires.Unix(), SessionVersion: sessionVersion}
 	encoded := encodeSession(secret, payload)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -28,6 +29,7 @@ func setSessionCookie(w http.ResponseWriter, secret string, userID int64) {
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
@@ -39,20 +41,21 @@ func clearSessionCookie(w http.ResponseWriter) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func readSessionUserID(r *http.Request, secret string) (int64, bool) {
+func readSession(r *http.Request, secret string) (sessionPayload, bool) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
-		return 0, false
+		return sessionPayload{}, false
 	}
 	payload, ok := decodeSession(secret, cookie.Value)
 	if !ok || payload.Exp < time.Now().Unix() {
-		return 0, false
+		return sessionPayload{}, false
 	}
-	return payload.UserID, true
+	return payload, true
 }
 
 func encodeSession(secret string, payload sessionPayload) string {

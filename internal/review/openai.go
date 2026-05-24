@@ -11,6 +11,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"code-review-bot/internal/netguard"
 )
 
 type OpenAIReviewer struct {
@@ -36,7 +38,8 @@ func NewOpenAIReviewer(baseURL string, apiKey string, model string) (*OpenAIRevi
 		apiKey:  apiKey,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 90 * time.Second,
+			Timeout:       90 * time.Second,
+			CheckRedirect: netguard.PublicHTTPSRedirectPolicy,
 		},
 	}, nil
 }

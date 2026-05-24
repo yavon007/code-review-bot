@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"code-review-bot/internal/netguard"
 )
 
 type Client struct {
@@ -62,7 +64,8 @@ func NewClient(baseURL string, token string) (*Client, error) {
 		baseURL: parsed,
 		token:   token,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			CheckRedirect: netguard.PublicHTTPSRedirectPolicy,
 		},
 	}, nil
 }

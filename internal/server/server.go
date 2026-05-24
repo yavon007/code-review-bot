@@ -12,6 +12,7 @@ import (
 	"code-review-bot/internal/config"
 	"code-review-bot/internal/gitea"
 	"code-review-bot/internal/jobs"
+	"code-review-bot/internal/netguard"
 	"code-review-bot/internal/review"
 	"code-review-bot/internal/settings"
 	"code-review-bot/internal/webhook"
@@ -101,6 +102,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
+	if err := validateAppSettingsURLs(request.Settings); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	userID, err := s.settings.CreateInitialAdmin(r.Context(), request.Username, request.Password, request.Settings)
 	if err != nil {
@@ -111,7 +116,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to initialize system")
 		return
 	}
-	setSessionCookie(w, s.sessionSecret, userID)
+	setSessionCookie(w, s.sessionSecret, userID, 0)
 	writeJSON(w, http.StatusCreated, map[string]any{"initialized": true})
 }
 
@@ -129,7 +134,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid login payload")
 		return
 	}
-	userID, err := s.settings.Authenticate(r.Context(), strings.TrimSpace(request.Username), request.Password)
+	userID, sessionVersion, err := s.settings.Authenticate(r.Context(), strings.TrimSpace(request.Username), request.Password)
 	if err != nil {
 		if errors.Is(err, settings.ErrInvalidCredentials) {
 			writeError(w, http.StatusUnauthorized, "invalid username or password")
@@ -138,11 +143,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to login")
 		return
 	}
-	setSessionCookie(w, s.sessionSecret, userID)
+	setSessionCookie(w, s.sessionSecret, userID, sessionVersion)
 	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if s.settings != nil {
+		if payload, ok := readSession(r, s.sessionSecret); ok {
+			if err := s.settings.RevokeUserSessions(r.Context(), payload.UserID); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to logout")
+				return
+			}
+		}
+	}
 	clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 }
@@ -181,6 +194,10 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid settings payload")
 		return
 	}
+	if err := validateAppSettingsURLs(request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.settings.Save(r.Context(), request, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save settings")
 		return
@@ -206,6 +223,10 @@ func (s *Server) handleTestGiteaSettings(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "gitea base url and token are required")
 		return
 	}
+	if err := validateGiteaBaseURL(appSettings.GiteaBaseURL); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	client, err := gitea.NewClient(appSettings.GiteaBaseURL, appSettings.GiteaToken)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid gitea base url")
@@ -229,6 +250,10 @@ func (s *Server) handleTestOpenAISettings(w http.ResponseWriter, r *http.Request
 	}
 	if appSettings.OpenAIBaseURL == "" || appSettings.OpenAIAPIKey == "" || appSettings.ReviewModel == "" {
 		writeError(w, http.StatusBadRequest, "openai base url, api key and model are required")
+		return
+	}
+	if err := validateOpenAIBaseURL(appSettings.OpenAIBaseURL); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := review.TestOpenAIConnection(r.Context(), appSettings.OpenAIBaseURL, appSettings.OpenAIAPIKey, appSettings.ReviewModel); err != nil {
@@ -421,12 +446,17 @@ func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) (int64, boo
 		writeError(w, http.StatusConflict, "setup required")
 		return 0, false
 	}
-	userID, ok := readSessionUserID(r, s.sessionSecret)
+	payload, ok := readSession(r, s.sessionSecret)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return 0, false
 	}
-	return userID, true
+	sessionVersion, err := s.settings.SessionVersion(r.Context(), payload.UserID)
+	if err != nil || sessionVersion != payload.SessionVersion {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return 0, false
+	}
+	return payload.UserID, true
 }
 
 func (s *Server) currentSettings(r *http.Request) (settings.AppSettings, error) {
@@ -455,6 +485,34 @@ func (s *Server) decodeSettingsPayload(r *http.Request) (settings.AppSettings, e
 		request.OpenAIAPIKey = current.OpenAIAPIKey
 	}
 	return request.Normalize(), nil
+}
+
+func validateAppSettingsURLs(appSettings settings.AppSettings) error {
+	if appSettings.GiteaBaseURL != "" {
+		if err := validateGiteaBaseURL(appSettings.GiteaBaseURL); err != nil {
+			return err
+		}
+	}
+	if appSettings.OpenAIBaseURL != "" {
+		if err := validateOpenAIBaseURL(appSettings.OpenAIBaseURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGiteaBaseURL(baseURL string) error {
+	if err := netguard.ValidatePublicHTTPSBaseURL(baseURL); err != nil {
+		return errors.New("gitea base url must be a public https url")
+	}
+	return nil
+}
+
+func validateOpenAIBaseURL(baseURL string) error {
+	if err := netguard.ValidatePublicHTTPSBaseURL(baseURL); err != nil {
+		return errors.New("openai base url must be a public https url")
+	}
+	return nil
 }
 
 func parseJobID(w http.ResponseWriter, r *http.Request) (int64, bool) {
