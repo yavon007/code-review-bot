@@ -200,22 +200,41 @@ func (s *Store) CreateInitialAdmin(ctx context.Context, username string, passwor
 	return id, nil
 }
 
-func (s *Store) Authenticate(ctx context.Context, username string, password string) (int64, error) {
+func (s *Store) Authenticate(ctx context.Context, username string, password string) (int64, int, error) {
 	var id int64
+	var sessionVersion int
 	var hash string
 	err := s.db.QueryRowContext(ctx, `
-		select id, password_hash from admin_users where username = $1
-	`, username).Scan(&id, &hash)
+		select id, coalesce(session_version, 0), password_hash from admin_users where username = $1
+	`, username).Scan(&id, &sessionVersion, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrInvalidCredentials
+		return 0, 0, ErrInvalidCredentials
 	}
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+		return 0, 0, ErrInvalidCredentials
+	}
+	return id, sessionVersion, nil
+}
+
+func (s *Store) SessionVersion(ctx context.Context, userID int64) (int, error) {
+	var sessionVersion int
+	err := s.db.QueryRowContext(ctx, `
+		select coalesce(session_version, 0) from admin_users where id = $1
+	`, userID).Scan(&sessionVersion)
 	if err != nil {
 		return 0, err
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
-		return 0, ErrInvalidCredentials
-	}
-	return id, nil
+	return sessionVersion, nil
+}
+
+func (s *Store) RevokeUserSessions(ctx context.Context, userID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		update admin_users set session_version = session_version + 1 where id = $1
+	`, userID)
+	return err
 }
 
 func (s *Store) Load(ctx context.Context) (AppSettings, error) {
