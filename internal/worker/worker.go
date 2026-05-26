@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -110,6 +111,7 @@ func (w *Worker) processOne(ctx context.Context) {
 	defer stopHeartbeat()
 	reviewer := reviewerFromSettings(appSettings, w.logger)
 
+	w.recordJobEvent(ctx, job.ID, "claimed", fmt.Sprintf("Worker %s 已领取任务", w.workerID))
 	w.logger.Info("processing review job", "job_id", job.ID, "repo", job.RepoFullName, "pr", job.PRNumber, "head_sha", job.HeadSHA, "worker_id", w.workerID)
 
 	if err := giteaClient.CreateCommitStatus(ctx, job.Owner, job.Repo, job.HeadSHA, gitea.CommitStatus{
@@ -121,12 +123,14 @@ func (w *Worker) processOne(ctx context.Context) {
 		return
 	}
 
+	w.recordJobEvent(ctx, job.ID, "fetch_files", "开始拉取 PR 变更文件")
 	changedFiles, err := giteaClient.ListPullRequestFiles(ctx, job.Owner, job.Repo, job.PRNumber)
 	if err != nil {
 		w.fail(ctx, giteaClient, job, jobs.StatusErrored, fmt.Errorf("list pull request files: %w", err))
 		return
 	}
 
+	w.recordJobEvent(ctx, job.ID, "fetch_diff", "开始拉取 PR diff")
 	diff, truncated, err := giteaClient.GetPullRequestDiff(ctx, job.Owner, job.Repo, job.PRNumber, appSettings.ReviewMaxDiffBytes)
 	if err != nil {
 		w.fail(ctx, giteaClient, job, jobs.StatusErrored, fmt.Errorf("get pull request diff: %w", err))
@@ -136,13 +140,33 @@ func (w *Worker) processOne(ctx context.Context) {
 	changedFiles = filterChangedFiles(changedFiles, appSettings.ReviewExcludePaths)
 	diff = filterUnifiedDiff(diff, appSettings.ReviewExcludePaths)
 
-	result, err := reviewer.Review(ctx, review.Input{Job: job, ChangedFiles: changedFiles, Diff: diff, DiffTruncated: truncated})
+	w.recordJobEvent(ctx, job.ID, "model_review", "开始调用模型审查")
+	result, err := reviewer.Review(ctx, review.Input{
+		Job:                     job,
+		ChangedFiles:            changedFiles,
+		Diff:                    diff,
+		DiffTruncated:           truncated,
+		Language:                appSettings.ReviewLanguage,
+		ReviewProfile:           appSettings.ReviewProfile,
+		ReviewFocusAreas:        appSettings.ReviewFocusAreas,
+		ReviewOutputStyle:       appSettings.ReviewOutputStyle,
+		ReviewExtraInstructions: appSettings.ReviewExtraInstructions,
+	})
 	if err != nil {
 		w.fail(ctx, giteaClient, job, jobs.StatusErrored, fmt.Errorf("review failed: %w", err))
 		return
 	}
 	if !w.ensureLease(ctx, job.ID) {
 		return
+	}
+	w.recordJobEvent(ctx, job.ID, "model_reviewed", fmt.Sprintf("模型审查完成，返回 %d 条 finding", len(result.Findings)))
+	if result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0 {
+		estimatedCost := estimateReviewCost(result.Usage, appSettings)
+		if err := w.store.SaveReviewUsage(ctx, job.ID, w.workerID, result.Usage.InputTokens, result.Usage.OutputTokens, estimatedCost); err != nil {
+			w.fail(ctx, giteaClient, job, jobs.StatusErrored, fmt.Errorf("save review usage: %w", err))
+			return
+		}
+		w.recordJobEvent(ctx, job.ID, "usage_saved", fmt.Sprintf("已记录 token 用量：input=%d output=%d", result.Usage.InputTokens, result.Usage.OutputTokens))
 	}
 
 	result.Findings = limitFindings(result.Findings, appSettings.ReviewMaxFindings)
@@ -151,6 +175,7 @@ func (w *Worker) processOne(ctx context.Context) {
 		w.fail(ctx, giteaClient, job, jobs.StatusErrored, fmt.Errorf("save review findings: %w", err))
 		return
 	}
+	w.recordJobEvent(ctx, job.ID, "findings_saved", fmt.Sprintf("已保存 %d 条 finding", len(findings)))
 	if appSettings.ReviewPostInlineComments {
 		if !w.ensureLease(ctx, job.ID) {
 			return
@@ -164,6 +189,7 @@ func (w *Worker) processOne(ctx context.Context) {
 		return
 	}
 
+	w.recordJobEvent(ctx, job.ID, "summary_comment", "开始写入 summary comment")
 	comment, err := w.upsertSummaryComment(ctx, giteaClient, job, result)
 	if err != nil {
 		w.fail(ctx, giteaClient, job, jobs.StatusErrored, fmt.Errorf("save summary comment: %w", err))
@@ -183,6 +209,7 @@ func (w *Worker) processOne(ctx context.Context) {
 		w.logger.Error("failed to mark review job complete", "job_id", job.ID, "worker_id", w.workerID, "error", err)
 		return
 	}
+	w.recordJobEvent(ctx, job.ID, "completed", fmt.Sprintf("任务完成，终态：%s", finalStatus))
 	w.syncPendingStatuses(ctx, giteaClient)
 	w.logger.Info("completed review job", "job_id", job.ID, "status", finalStatus, "findings", len(findings))
 }
@@ -309,7 +336,14 @@ func (w *Worker) fail(ctx context.Context, giteaClient *gitea.Client, job jobs.J
 		w.logger.Error("failed to mark review job failed", "job_id", job.ID, "worker_id", w.workerID, "error", markErr)
 		return
 	}
+	w.recordJobEvent(ctx, job.ID, "failed", message)
 	w.syncPendingStatuses(ctx, giteaClient)
+}
+
+func (w *Worker) recordJobEvent(ctx context.Context, jobID int64, eventType string, message string) {
+	if err := w.store.RecordJobEvent(ctx, jobID, eventType, message); err != nil {
+		w.logger.Warn("failed to record job event", "job_id", jobID, "event", eventType, "error", err)
+	}
 }
 
 func (w *Worker) postInlineComments(ctx context.Context, giteaClient *gitea.Client, job jobs.Job) error {
@@ -317,8 +351,18 @@ func (w *Worker) postInlineComments(ctx context.Context, giteaClient *gitea.Clie
 	if err != nil {
 		return err
 	}
+	existingComments, err := giteaClient.ListIssueComments(ctx, job.Owner, job.Repo, job.PRNumber)
+	if err != nil {
+		w.logger.Warn("failed to list issue comments before inline comment de-duplication", "job_id", job.ID, "error", err)
+	}
 	for _, finding := range findings {
 		if !finding.IsInline || finding.IsPosted || finding.Path == "" || finding.Line <= 0 {
+			continue
+		}
+		if existing := findInlineCommentByMarker(existingComments, inlineCommentMarker(finding)); existing.ID != 0 {
+			if err := w.store.MarkFindingPosted(ctx, job.ID, w.workerID, finding.ID, fmt.Sprintf("%d", existing.ID), existing.HTMLURL); err != nil {
+				return fmt.Errorf("mark existing inline comment posted: %w", err)
+			}
 			continue
 		}
 		if !w.ensureLease(ctx, job.ID) {
@@ -423,8 +467,30 @@ func commitStatusDescription(status jobs.Status) string {
 	}
 }
 
+func estimateReviewCost(usage review.Usage, appSettings settings.AppSettings) float64 {
+	inputCost := float64(usage.InputTokens) * appSettings.ReviewInputTokenPricePerMillion / 1_000_000
+	outputCost := float64(usage.OutputTokens) * appSettings.ReviewOutputTokenPricePerMillion / 1_000_000
+	return inputCost + outputCost
+}
+
 func inlineCommentBody(finding jobs.ReviewFinding) string {
-	return fmt.Sprintf("**[%s/%s] %s**\n\n%s", finding.Severity, finding.Category, finding.Title, finding.Body)
+	return fmt.Sprintf("%s\n**[%s/%s] %s**\n\n%s", inlineCommentMarker(finding), finding.Severity, finding.Category, finding.Title, finding.Body)
+}
+
+func inlineCommentMarker(finding jobs.ReviewFinding) string {
+	return fmt.Sprintf("<!-- code-review-bot:finding=%s -->", finding.FindingHash)
+}
+
+func findInlineCommentByMarker(comments []gitea.IssueComment, marker string) gitea.IssueComment {
+	if marker == "" {
+		return gitea.IssueComment{}
+	}
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, marker) {
+			return comment
+		}
+	}
+	return gitea.IssueComment{}
 }
 
 func limitFindings(findings []review.Finding, maxFindings int) []review.Finding {
@@ -434,10 +500,15 @@ func limitFindings(findings []review.Finding, maxFindings int) []review.Finding 
 	return findings[:maxFindings]
 }
 
+func stableFindingHash(jobID int64, finding jobs.ReviewFinding) string {
+	hash := sha256.Sum256([]byte(strconv.FormatInt(jobID, 10) + "\x00" + finding.Path + "\x00" + strconv.Itoa(finding.Line) + "\x00" + finding.Severity + "\x00" + finding.Title + "\x00" + finding.Body))
+	return hex.EncodeToString(hash[:])
+}
+
 func reviewFindings(jobID int64, findings []review.Finding) []jobs.ReviewFinding {
 	result := make([]jobs.ReviewFinding, 0, len(findings))
 	for _, finding := range findings {
-		result = append(result, jobs.ReviewFinding{
+		reviewFinding := jobs.ReviewFinding{
 			JobID:      jobID,
 			Path:       finding.Path,
 			Line:       finding.Line,
@@ -447,7 +518,9 @@ func reviewFindings(jobID int64, findings []review.Finding) []jobs.ReviewFinding
 			Body:       finding.Body,
 			Confidence: finding.Confidence,
 			IsInline:   finding.Path != "" && finding.Line > 0,
-		})
+		}
+		reviewFinding.FindingHash = stableFindingHash(jobID, reviewFinding)
+		result = append(result, reviewFinding)
 	}
 	return result
 }

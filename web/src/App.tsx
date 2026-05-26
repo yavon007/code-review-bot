@@ -17,6 +17,9 @@ type Job = {
   error_message?: string;
   summary?: string;
   gitea_comment_id?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  estimated_cost?: number;
   created_at: string;
 };
 
@@ -34,6 +37,14 @@ type Finding = {
   is_posted: boolean;
   gitea_comment_url?: string;
   post_error?: string;
+};
+
+type JobEvent = {
+  id: number;
+  job_id: number;
+  type: string;
+  message?: string;
+  created_at: string;
 };
 
 type WebhookDelivery = {
@@ -60,6 +71,13 @@ type RuntimeSettings = {
   openai_api_key?: string;
   openai_base_url: string;
   review_model: string;
+  review_language: string;
+  review_profile: string;
+  review_focus_areas: string[];
+  review_output_style: string;
+  review_extra_instructions: string;
+  review_input_token_price_per_million: number;
+  review_output_token_price_per_million: number;
   review_max_diff_bytes: number;
   review_exclude_paths: string[];
   review_fail_on_high: boolean;
@@ -85,6 +103,10 @@ type DeliveriesResponse = {
   deliveries: WebhookDelivery[];
 };
 
+type EventsResponse = {
+  events: JobEvent[];
+};
+
 type Mode = 'loading' | 'setup' | 'login' | 'app';
 type AppTab = 'jobs' | 'deliveries' | 'settings';
 
@@ -96,6 +118,13 @@ const defaultSettings: RuntimeSettings = {
   openai_api_key: '',
   openai_base_url: 'https://api.openai.com/v1',
   review_model: 'gpt-4.1',
+  review_language: '中文',
+  review_profile: 'balanced',
+  review_focus_areas: ['correctness', 'security', 'data_loss', 'concurrency', 'test_gap'],
+  review_output_style: 'detailed',
+  review_extra_instructions: '',
+  review_input_token_price_per_million: 0,
+  review_output_token_price_per_million: 0,
   review_max_diff_bytes: 120000,
   review_exclude_paths: ['vendor/**', 'node_modules/**', 'dist/**', 'build/**', '*.lock', '*.min.js'],
   review_fail_on_high: true,
@@ -151,7 +180,7 @@ export function App() {
       <header className="header">
         <div>
           <p className="eyebrow">Gitea PR Code Review Bot</p>
-          <h1>{tab === 'jobs' ? 'Review Jobs' : tab === 'deliveries' ? 'Webhook Deliveries' : '系统配置'}</h1>
+          <h1>{tab === 'jobs' ? '审查任务' : tab === 'deliveries' ? 'Webhook 记录' : '系统配置'}</h1>
         </div>
         <div className="headerActions">
           <button className={tab === 'jobs' ? 'secondary activeTab' : 'secondary'} onClick={() => setTab('jobs')}>任务</button>
@@ -247,7 +276,7 @@ function LoginPage({ onDone }: { onDone: () => void }) {
     <main className="page narrow">
       <header className="header">
         <div>
-          <p className="eyebrow">Admin Login</p>
+          <p className="eyebrow">管理员登录</p>
           <h1>登录</h1>
         </div>
       </header>
@@ -318,7 +347,7 @@ function JobsPage() {
               <button key={job.id} className={job.id === selectedJob?.id ? 'job active' : 'job'} onClick={() => setSelectedJob(job)}>
                 <div className="jobTopline"><strong>#{job.pr_number}</strong><StatusBadge status={job.status} /></div>
                 <span>{job.repo_full_name}</span>
-                <small>{shortSha(job.head_sha)} · attempts {job.attempt_count}</small>
+                <small>{shortSha(job.head_sha)} · 尝试 {job.attempt_count} 次</small>
               </button>
             ))}
           </div>
@@ -367,7 +396,7 @@ function DeliveriesPage() {
       {error ? <div className="alert">{error}</div> : null}
       <section className="panel">
         <div className="panelHeader"><h2>Webhook 记录</h2><span>{deliveries.length} 条</span></div>
-        {deliveries.length === 0 && !isLoading ? <p className="empty">暂无 webhook delivery</p> : null}
+        {deliveries.length === 0 && !isLoading ? <p className="empty">暂无 Webhook 记录</p> : null}
         <div className="findingList">
           {deliveries.map((delivery) => (
             <article key={delivery.id} className="finding">
@@ -470,6 +499,7 @@ function SettingsPage() {
 
 function SettingsFields({ settings, onChange, sensitivePlaceholder }: { settings: RuntimeSettings; onChange: (settings: RuntimeSettings) => void; sensitivePlaceholder: string }) {
   const excludePathsText = settings.review_exclude_paths.join(',');
+  const focusAreasText = settings.review_focus_areas.join(',');
 
   function patch(next: Partial<RuntimeSettings>) {
     onChange({ ...settings, ...next });
@@ -477,19 +507,26 @@ function SettingsFields({ settings, onChange, sensitivePlaceholder }: { settings
 
   return (
     <div className="settingsGrid">
-      <label>Gitea Base URL<input value={settings.gitea_base_url} onChange={(event) => patch({ gitea_base_url: event.target.value })} placeholder="https://gitea.example.com" /></label>
+      <label>Gitea 地址<input value={settings.gitea_base_url} onChange={(event) => patch({ gitea_base_url: event.target.value })} placeholder="https://gitea.example.com" /></label>
       <label>Gitea Token<input type="password" value={settings.gitea_token ?? ''} onChange={(event) => patch({ gitea_token: event.target.value })} placeholder={sensitivePlaceholder} /></label>
-      <label>Webhook Secret<input type="password" value={settings.gitea_webhook_secret ?? ''} onChange={(event) => patch({ gitea_webhook_secret: event.target.value })} placeholder={sensitivePlaceholder} /></label>
-      <label>Bot Name<input value={settings.bot_name} onChange={(event) => patch({ bot_name: event.target.value })} /></label>
+      <label>Webhook 密钥<input type="password" value={settings.gitea_webhook_secret ?? ''} onChange={(event) => patch({ gitea_webhook_secret: event.target.value })} placeholder={sensitivePlaceholder} /></label>
+      <label>机器人名称<input value={settings.bot_name} onChange={(event) => patch({ bot_name: event.target.value })} /></label>
       <label>OpenAI API Key<input type="password" value={settings.openai_api_key ?? ''} onChange={(event) => patch({ openai_api_key: event.target.value })} placeholder={sensitivePlaceholder} /></label>
-      <label>OpenAI Base URL<input value={settings.openai_base_url} onChange={(event) => patch({ openai_base_url: event.target.value })} /></label>
-      <label>Review Model<input value={settings.review_model} onChange={(event) => patch({ review_model: event.target.value })} /></label>
-      <label>Max Diff Bytes<input type="number" value={settings.review_max_diff_bytes} onChange={(event) => patch({ review_max_diff_bytes: Number(event.target.value) })} /></label>
-      <label>Exclude Paths<input value={excludePathsText} onChange={(event) => patch({ review_exclude_paths: splitList(event.target.value) })} /></label>
-      <label>Max Findings<input type="number" value={settings.review_max_findings} onChange={(event) => patch({ review_max_findings: Number(event.target.value) })} /></label>
-      <label>Max Attempts<input type="number" value={settings.review_max_attempts} onChange={(event) => patch({ review_max_attempts: Number(event.target.value) })} /></label>
-      <label>Stale Timeout<input value={settings.review_stale_timeout} onChange={(event) => patch({ review_stale_timeout: event.target.value })} /></label>
-      <label>Worker Poll Interval<input value={settings.worker_poll_interval} onChange={(event) => patch({ worker_poll_interval: event.target.value })} /></label>
+      <label>OpenAI 地址<input value={settings.openai_base_url} onChange={(event) => patch({ openai_base_url: event.target.value })} /></label>
+      <label>审查模型<input value={settings.review_model} onChange={(event) => patch({ review_model: event.target.value })} /></label>
+      <label>输出语言<input value={settings.review_language} onChange={(event) => patch({ review_language: event.target.value })} placeholder="中文" /></label>
+      <label>审查强度<select value={settings.review_profile} onChange={(event) => patch({ review_profile: event.target.value })}><option value="strict">严格</option><option value="balanced">平衡</option><option value="lenient">宽松</option></select></label>
+      <label>输出风格<select value={settings.review_output_style} onChange={(event) => patch({ review_output_style: event.target.value })}><option value="concise">简洁</option><option value="detailed">详细</option></select></label>
+      <label className="wideField">关注领域<input value={focusAreasText} onChange={(event) => patch({ review_focus_areas: splitList(event.target.value) })} placeholder="correctness,security,data_loss,concurrency,test_gap" /></label>
+      <label className="wideField">额外审查规则<textarea value={settings.review_extra_instructions} onChange={(event) => patch({ review_extra_instructions: event.target.value })} placeholder="例如：全部使用中文输出，重点关注 SQL 注入、XSS、并发和数据丢失问题。" rows={5} /></label>
+      <label>输入 Token 单价/百万<input type="number" step="0.000001" value={settings.review_input_token_price_per_million} onChange={(event) => patch({ review_input_token_price_per_million: Number(event.target.value) })} /></label>
+      <label>输出 Token 单价/百万<input type="number" step="0.000001" value={settings.review_output_token_price_per_million} onChange={(event) => patch({ review_output_token_price_per_million: Number(event.target.value) })} /></label>
+      <label>最大 Diff 字节数<input type="number" value={settings.review_max_diff_bytes} onChange={(event) => patch({ review_max_diff_bytes: Number(event.target.value) })} /></label>
+      <label>排除路径<input value={excludePathsText} onChange={(event) => patch({ review_exclude_paths: splitList(event.target.value) })} /></label>
+      <label>最大 Findings 数<input type="number" value={settings.review_max_findings} onChange={(event) => patch({ review_max_findings: Number(event.target.value) })} /></label>
+      <label>最大尝试次数<input type="number" value={settings.review_max_attempts} onChange={(event) => patch({ review_max_attempts: Number(event.target.value) })} /></label>
+      <label>Stale 超时时间<input value={settings.review_stale_timeout} onChange={(event) => patch({ review_stale_timeout: event.target.value })} /></label>
+      <label>Worker 轮询间隔<input value={settings.worker_poll_interval} onChange={(event) => patch({ worker_poll_interval: event.target.value })} /></label>
       <label className="checkbox"><input type="checkbox" checked={settings.review_fail_on_high} onChange={(event) => patch({ review_fail_on_high: event.target.checked })} />High risk 设置 failure</label>
       <label className="checkbox"><input type="checkbox" checked={settings.review_post_inline_comments} onChange={(event) => patch({ review_post_inline_comments: event.target.checked })} />发布 inline comments</label>
     </div>
@@ -498,6 +535,7 @@ function SettingsFields({ settings, onChange, sensitivePlaceholder }: { settings
 
 function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) {
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [events, setEvents] = useState<JobEvent[]>([]);
   const [isLoadingFindings, setIsLoadingFindings] = useState(false);
   const [findingsError, setFindingsError] = useState<string | null>(null);
 
@@ -513,8 +551,14 @@ function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) 
           throw new Error(`请求失败：${response.status}`);
         }
         const data = (await response.json()) as FindingsResponse;
+        const eventsResponse = await fetch(`/api/jobs/${job.id}/events`);
+        if (!eventsResponse.ok) {
+          throw new Error(`请求失败：${eventsResponse.status}`);
+        }
+        const eventsData = (await eventsResponse.json()) as EventsResponse;
         if (isActive) {
           setFindings(data.findings ?? []);
+          setEvents(eventsData.events ?? []);
         }
       } catch (err) {
         if (isActive) {
@@ -545,16 +589,32 @@ function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) 
         <dt>提交</dt><dd><code>{job.head_sha}</code></dd>
         <dt>触发人</dt><dd>{job.sender || '-'}</dd>
         <dt>创建时间</dt><dd>{new Date(job.created_at).toLocaleString()}</dd>
-        <dt>Summary</dt><dd>{job.summary || '-'}</dd>
+        <dt>Token 用量</dt><dd>{formatUsage(job)}</dd>
+        <dt>估算成本</dt><dd>{formatCost(job.estimated_cost)}</dd>
+        <dt>审查摘要</dt><dd>{job.summary || '-'}</dd>
         <dt>错误</dt><dd className={job.error_message ? 'errorText' : undefined}>{job.error_message || '-'}</dd>
       </dl>
 
       {isRetryable(job) ? <div className="detailActions"><button onClick={() => onRetry(job)}>重新排队 review</button></div> : null}
 
       <section className="findingsSection">
-        <div className="panelHeader compact"><h2>Findings</h2><span>{isLoadingFindings ? '加载中...' : `${findings.length} 条`}</span></div>
+        <div className="panelHeader compact"><h2>执行时间线</h2><span>{events.length} 条</span></div>
+        {events.length === 0 ? <p className="empty">暂无执行事件</p> : null}
+        <div className="eventList">
+          {events.map((event) => (
+            <article key={event.id} className="eventItem">
+              <strong>{eventLabel(event.type)}</strong>
+              <span>{new Date(event.created_at).toLocaleString()}</span>
+              {event.message ? <p>{event.message}</p> : null}
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="findingsSection">
+        <div className="panelHeader compact"><h2>审查发现</h2><span>{isLoadingFindings ? '加载中...' : `${findings.length} 条`}</span></div>
         {findingsError ? <div className="alert">{findingsError}</div> : null}
-        {findings.length === 0 && !isLoadingFindings ? <p className="empty">暂无 findings</p> : null}
+        {findings.length === 0 && !isLoadingFindings ? <p className="empty">暂无审查发现</p> : null}
         <div className="findingList">
           {findings.map((finding) => (
             <article key={finding.id} className="finding">
@@ -562,8 +622,8 @@ function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) 
               <p>{finding.body}</p>
               <small>
                 {finding.category} · {finding.path}{finding.line ? `:${finding.line}` : ''}
-                {typeof finding.confidence === 'number' ? ` · confidence ${finding.confidence.toFixed(2)}` : ''}
-                {finding.is_inline ? ` · inline ${finding.is_posted ? 'posted' : 'pending'}` : ''}
+                {typeof finding.confidence === 'number' ? ` · 置信度 ${finding.confidence.toFixed(2)}` : ''}
+                {finding.is_inline ? ` · inline ${finding.is_posted ? '已发布' : '待发布'}` : ''}
               </small>
               {finding.gitea_comment_url ? <a href={finding.gitea_comment_url} target="_blank" rel="noreferrer">查看 inline comment</a> : null}
               {finding.post_error ? <p className="errorText">Inline 发布失败：{finding.post_error}</p> : null}
@@ -576,7 +636,45 @@ function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) 
 }
 
 function StatusBadge({ status }: { status: string }) {
-  return <span className={`badge ${status}`}>{status}</span>;
+  return <span className={`badge ${status}`}>{statusLabel(status)}</span>;
+}
+
+function eventLabel(type: string) {
+  const labels: Record<string, string> = {
+    queued: '已排队',
+    claimed: '已领取',
+    fetch_files: '拉取文件',
+    fetch_diff: '拉取 Diff',
+    model_review: '模型审查',
+    model_reviewed: '模型审查完成',
+    usage_saved: '记录用量',
+    findings_saved: '保存 Findings',
+    summary_comment: '写入摘要评论',
+    completed: '任务完成',
+    failed: '任务失败',
+  };
+  return labels[type] ?? type;
+}
+
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    queued: '排队中',
+    running: '运行中',
+    succeeded: '已通过',
+    failed: '未通过',
+    errored: '执行错误',
+    duplicate: '重复',
+    ignored: '已忽略',
+    ignored_bot_event: '忽略机器人事件',
+    invalid_signature: '签名无效',
+    invalid_payload: 'Payload 无效',
+    error: '错误',
+    received: '已接收',
+    low: '低',
+    medium: '中',
+    high: '高',
+  };
+  return labels[status] ?? status;
 }
 
 function isRetryable(job: Job) {
@@ -587,6 +685,22 @@ function shortSha(sha: string) {
   return sha ? sha.slice(0, 8) : '-';
 }
 
+function formatUsage(job: Job) {
+  const input = job.input_tokens ?? 0;
+  const output = job.output_tokens ?? 0;
+  if (input === 0 && output === 0) {
+    return '-';
+  }
+  return `输入 ${input} / 输出 ${output}`;
+}
+
+function formatCost(value?: number) {
+  if (!value || value <= 0) {
+    return '-';
+  }
+  return `$${value.toFixed(6)}`;
+}
+
 function splitList(value: string) {
   return value.split(',').map((item) => item.trim()).filter(Boolean);
 }
@@ -595,9 +709,12 @@ function normalizeSettings(settings: RuntimeSettings) {
   return {
     ...settings,
     review_max_diff_bytes: Number(settings.review_max_diff_bytes) || defaultSettings.review_max_diff_bytes,
+    review_input_token_price_per_million: Number(settings.review_input_token_price_per_million) || 0,
+    review_output_token_price_per_million: Number(settings.review_output_token_price_per_million) || 0,
     review_max_findings: Number(settings.review_max_findings) || defaultSettings.review_max_findings,
     review_max_attempts: Number(settings.review_max_attempts) || defaultSettings.review_max_attempts,
     review_exclude_paths: settings.review_exclude_paths,
+    review_focus_areas: settings.review_focus_areas,
   };
 }
 

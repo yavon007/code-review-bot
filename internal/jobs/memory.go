@@ -30,10 +30,13 @@ type Store interface {
 	MarkStatusSyncError(ctx context.Context, id int64, workerID string, message string) error
 	RecordDelivery(ctx context.Context, input WebhookDeliveryInput) error
 	ListDeliveries(ctx context.Context) ([]WebhookDelivery, error)
+	RecordJobEvent(ctx context.Context, jobID int64, eventType string, message string) error
+	ListJobEvents(ctx context.Context, jobID int64) ([]JobEvent, error)
 	Complete(ctx context.Context, id int64, workerID string, status Status, summary string, commentID string) error
 	Fail(ctx context.Context, id int64, workerID string, status Status, message string) error
 	Retry(ctx context.Context, id int64) (Job, error)
 	SaveSummaryComment(ctx context.Context, id int64, workerID string, commentID string) error
+	SaveReviewUsage(ctx context.Context, id int64, workerID string, inputTokens int, outputTokens int, estimatedCost float64) error
 	SaveFindings(ctx context.Context, jobID int64, workerID string, findings []ReviewFinding) error
 	ListFindings(ctx context.Context, jobID int64) ([]ReviewFinding, error)
 	MarkFindingPosted(ctx context.Context, jobID int64, workerID string, id int64, commentID string, commentURL string) error
@@ -51,23 +54,26 @@ const (
 )
 
 type Job struct {
-	ID           int64     `json:"id"`
-	DeliveryID   string    `json:"delivery_id"`
-	EventName    string    `json:"event_name"`
-	Action       string    `json:"action"`
-	RepoFullName string    `json:"repo_full_name"`
-	Owner        string    `json:"owner"`
-	Repo         string    `json:"repo"`
-	PRNumber     int       `json:"pr_number"`
-	HeadSHA      string    `json:"head_sha"`
-	BaseSHA      string    `json:"base_sha"`
-	Sender       string    `json:"sender"`
-	Status       Status    `json:"status"`
-	AttemptCount int       `json:"attempt_count"`
-	ErrorMessage string    `json:"error_message,omitempty"`
-	Summary      string    `json:"summary,omitempty"`
-	CommentID    string    `json:"gitea_comment_id,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID            int64     `json:"id"`
+	DeliveryID    string    `json:"delivery_id"`
+	EventName     string    `json:"event_name"`
+	Action        string    `json:"action"`
+	RepoFullName  string    `json:"repo_full_name"`
+	Owner         string    `json:"owner"`
+	Repo          string    `json:"repo"`
+	PRNumber      int       `json:"pr_number"`
+	HeadSHA       string    `json:"head_sha"`
+	BaseSHA       string    `json:"base_sha"`
+	Sender        string    `json:"sender"`
+	Status        Status    `json:"status"`
+	AttemptCount  int       `json:"attempt_count"`
+	ErrorMessage  string    `json:"error_message,omitempty"`
+	Summary       string    `json:"summary,omitempty"`
+	CommentID     string    `json:"gitea_comment_id,omitempty"`
+	InputTokens   int       `json:"input_tokens,omitempty"`
+	OutputTokens  int       `json:"output_tokens,omitempty"`
+	EstimatedCost float64   `json:"estimated_cost,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type WebhookDelivery struct {
@@ -100,6 +106,14 @@ type WebhookDeliveryInput struct {
 	JobID          int64
 }
 
+type JobEvent struct {
+	ID        int64     `json:"id"`
+	JobID     int64     `json:"job_id"`
+	Type      string    `json:"type"`
+	Message   string    `json:"message,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type ReviewFinding struct {
 	ID          int64   `json:"id"`
 	JobID       int64   `json:"job_id"`
@@ -123,8 +137,10 @@ type MemoryStore struct {
 	nextID            int64
 	nextDeliveryID    int64
 	nextFindingID     int64
+	nextEventID       int64
 	jobs              map[int64]Job
 	findings          map[int64][]ReviewFinding
+	events            map[int64][]JobEvent
 	deliveries        []WebhookDelivery
 	runningSince      map[int64]time.Time
 	runningWorker     map[int64]string
@@ -139,8 +155,10 @@ func NewMemoryStore() *MemoryStore {
 		nextID:            1,
 		nextDeliveryID:    1,
 		nextFindingID:     1,
+		nextEventID:       1,
 		jobs:              make(map[int64]Job),
 		findings:          make(map[int64][]ReviewFinding),
+		events:            make(map[int64][]JobEvent),
 		runningSince:      make(map[int64]time.Time),
 		runningWorker:     make(map[int64]string),
 		statusSyncPending: make(map[int64]bool),
@@ -383,6 +401,27 @@ func (s *MemoryStore) ListDeliveries(ctx context.Context) ([]WebhookDelivery, er
 	return result, nil
 }
 
+func (s *MemoryStore) RecordJobEvent(ctx context.Context, jobID int64, eventType string, message string) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.jobs[jobID]; !ok {
+		return ErrJobNotFound
+	}
+	s.events[jobID] = append(s.events[jobID], JobEvent{ID: s.nextEventID, JobID: jobID, Type: eventType, Message: message, CreatedAt: time.Now().UTC()})
+	s.nextEventID++
+	return nil
+}
+
+func (s *MemoryStore) ListJobEvents(ctx context.Context, jobID int64) ([]JobEvent, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]JobEvent, len(s.events[jobID]))
+	copy(result, s.events[jobID])
+	return result, nil
+}
+
 func (s *MemoryStore) Complete(ctx context.Context, id int64, workerID string, status Status, summary string, commentID string) error {
 	_ = ctx
 	s.mu.Lock()
@@ -457,6 +496,22 @@ func (s *MemoryStore) SaveSummaryComment(ctx context.Context, id int64, workerID
 		return ErrJobLeaseLost
 	}
 	job.CommentID = commentID
+	s.jobs[id] = job
+	return nil
+}
+
+func (s *MemoryStore) SaveReviewUsage(ctx context.Context, id int64, workerID string, inputTokens int, outputTokens int, estimatedCost float64) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, ok := s.jobs[id]
+	if !ok || job.Status != StatusRunning || s.runningWorker[id] != workerID {
+		return ErrJobLeaseLost
+	}
+	job.InputTokens = inputTokens
+	job.OutputTokens = outputTokens
+	job.EstimatedCost = estimatedCost
 	s.jobs[id] = job
 	return nil
 }

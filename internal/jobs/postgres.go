@@ -106,7 +106,7 @@ func (s *PostgresStore) Create(ctx context.Context, input webhook.ReviewJobInput
 		on conflict do nothing
 		returning id, coalesce(delivery_id, ''), event_name, action, repo_full_name, owner_name, repo_name,
 			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
-			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
+			coalesce(summary, ''), coalesce(gitea_comment_id, ''), coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(estimated_cost, 0), created_at
 	`, nullString(input.DeliveryID), input.EventName, input.Action, input.RepoFullName, input.Owner, input.Repo,
 		input.PRNumber, input.HeadSHA, input.BaseSHA, input.Sender, StatusQueued).Scan(
 		&job.ID,
@@ -125,6 +125,9 @@ func (s *PostgresStore) Create(ctx context.Context, input webhook.ReviewJobInput
 		&job.ErrorMessage,
 		&job.Summary,
 		&job.CommentID,
+		&job.InputTokens,
+		&job.OutputTokens,
+		&job.EstimatedCost,
 		&job.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -163,6 +166,40 @@ func (s *PostgresStore) Create(ctx context.Context, input webhook.ReviewJobInput
 		return Job{}, err
 	}
 	return job, nil
+}
+
+func (s *PostgresStore) RecordJobEvent(ctx context.Context, jobID int64, eventType string, message string) error {
+	_, err := s.db.ExecContext(ctx, `
+		insert into review_job_events (job_id, event_type, message)
+		values ($1, $2, $3)
+	`, jobID, eventType, nullString(message))
+	return err
+}
+
+func (s *PostgresStore) ListJobEvents(ctx context.Context, jobID int64) ([]JobEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		select id, job_id, event_type, coalesce(message, ''), created_at
+		from review_job_events
+		where job_id = $1
+		order by id asc
+	`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]JobEvent, 0)
+	for rows.Next() {
+		var event JobEvent
+		if err := rows.Scan(&event.ID, &event.JobID, &event.Type, &event.Message, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]Job, error) {
@@ -206,7 +243,7 @@ func (s *PostgresStore) ClaimQueued(ctx context.Context, workerID string) (Job, 
 		where id = (select id from selected)
 		returning id, coalesce(delivery_id, ''), event_name, action, repo_full_name, owner_name, repo_name,
 			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
-			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
+			coalesce(summary, ''), coalesce(gitea_comment_id, ''), coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(estimated_cost, 0), created_at
 	`, StatusQueued, StatusRunning, workerID).Scan(
 		&job.ID,
 		&job.DeliveryID,
@@ -224,6 +261,9 @@ func (s *PostgresStore) ClaimQueued(ctx context.Context, workerID string) (Job, 
 		&job.ErrorMessage,
 		&job.Summary,
 		&job.CommentID,
+		&job.InputTokens,
+		&job.OutputTokens,
+		&job.EstimatedCost,
 		&job.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -303,7 +343,7 @@ func (s *PostgresStore) ClaimPendingStatusSync(ctx context.Context, workerID str
 		where id in (select id from selected)
 		returning id, coalesce(delivery_id, ''), event_name, action, repo_full_name, owner_name, repo_name,
 			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
-			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
+			coalesce(summary, ''), coalesce(gitea_comment_id, ''), coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(estimated_cost, 0), created_at
 	`, StatusSucceeded, StatusFailed, StatusErrored, limit, workerID)
 	if err != nil {
 		return nil, err
@@ -380,7 +420,7 @@ func (s *PostgresStore) Retry(ctx context.Context, id int64) (Job, error) {
 		where id = $2 and status = $3 and (status_sync_worker_id is null or status_sync_started_at < now() - interval '2 minutes')
 		returning id, coalesce(delivery_id, ''), event_name, action, repo_full_name, owner_name, repo_name,
 			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
-			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
+			coalesce(summary, ''), coalesce(gitea_comment_id, ''), coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(estimated_cost, 0), created_at
 	`, StatusQueued, id, StatusErrored).Scan(
 		&job.ID,
 		&job.DeliveryID,
@@ -398,6 +438,9 @@ func (s *PostgresStore) Retry(ctx context.Context, id int64) (Job, error) {
 		&job.ErrorMessage,
 		&job.Summary,
 		&job.CommentID,
+		&job.InputTokens,
+		&job.OutputTokens,
+		&job.EstimatedCost,
 		&job.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -412,6 +455,15 @@ func (s *PostgresStore) SaveSummaryComment(ctx context.Context, id int64, worker
 		set gitea_comment_id = $1
 		where id = $2 and worker_id = $3 and status = $4
 	`, commentID, id, workerID, StatusRunning)
+	return leaseUpdateErr(result, err)
+}
+
+func (s *PostgresStore) SaveReviewUsage(ctx context.Context, id int64, workerID string, inputTokens int, outputTokens int, estimatedCost float64) error {
+	result, err := s.db.ExecContext(ctx, `
+		update review_jobs
+		set input_tokens = $1, output_tokens = $2, estimated_cost = $3
+		where id = $4 and worker_id = $5 and status = $6
+	`, inputTokens, outputTokens, estimatedCost, id, workerID, StatusRunning)
 	return leaseUpdateErr(result, err)
 }
 
@@ -603,7 +655,7 @@ func jobSelectQuery() string {
 	return `
 		select id, coalesce(delivery_id, ''), event_name, action, repo_full_name, owner_name, repo_name,
 			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),
-			coalesce(summary, ''), coalesce(gitea_comment_id, ''), created_at
+			coalesce(summary, ''), coalesce(gitea_comment_id, ''), coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(estimated_cost, 0), created_at
 	`
 }
 
@@ -642,6 +694,9 @@ func scanJob(scanner rowScanner) (Job, error) {
 		&job.ErrorMessage,
 		&job.Summary,
 		&job.CommentID,
+		&job.InputTokens,
+		&job.OutputTokens,
+		&job.EstimatedCost,
 		&job.CreatedAt,
 	)
 	return job, err

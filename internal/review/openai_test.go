@@ -4,10 +4,33 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"code-review-bot/internal/jobs"
 )
+
+func TestBuildPromptIncludesConfiguredLanguageAndInstructions(t *testing.T) {
+	prompt := buildPrompt(Input{
+		Job:                     jobs.Job{RepoFullName: "acme/order-service", PRNumber: 123, HeadSHA: "abc123"},
+		Diff:                    "diff --git",
+		Language:                "中文",
+		ReviewProfile:           "strict",
+		ReviewFocusAreas:        []string{"security", "concurrency"},
+		ReviewOutputStyle:       "concise",
+		ReviewExtraInstructions: "重点关注 SQL 注入和并发问题。",
+	})
+
+	if !strings.Contains(prompt, "Review language: 中文") {
+		t.Fatalf("expected prompt to include configured language: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Review profile: strict") || !strings.Contains(prompt, "Review focus areas: security, concurrency") || !strings.Contains(prompt, "Review output style: concise") {
+		t.Fatalf("expected prompt to include productized review settings: %s", prompt)
+	}
+	if !strings.Contains(prompt, "重点关注 SQL 注入和并发问题。") {
+		t.Fatalf("expected prompt to include extra instructions: %s", prompt)
+	}
+}
 
 func TestOpenAIReviewerFallsBackToChatCompletions(t *testing.T) {
 	var sawChatCompletions bool
@@ -28,7 +51,7 @@ func TestOpenAIReviewerFallsBackToChatCompletions(t *testing.T) {
 				t.Fatalf("unexpected schema name: %s", payload.ResponseFormat.JSONSchema.Name)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"summary\":\"chat fallback ok\",\"risk_level\":\"low\",\"decision\":\"comment\"}"}}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"summary\":\"chat fallback ok\",\"risk_level\":\"low\",\"decision\":\"comment\"}"}}],"usage":{"prompt_tokens":11,"completion_tokens":7}}`))
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -49,6 +72,9 @@ func TestOpenAIReviewerFallsBackToChatCompletions(t *testing.T) {
 	}
 	if result.Summary != "chat fallback ok" {
 		t.Fatalf("unexpected summary: %s", result.Summary)
+	}
+	if result.Usage.InputTokens != 11 || result.Usage.OutputTokens != 7 {
+		t.Fatalf("unexpected usage: %+v", result.Usage)
 	}
 }
 
@@ -73,7 +99,7 @@ func TestOpenAIReviewerReview(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"output_text":"{\"summary\":\"整体风险较低。\",\"risk_level\":\"low\",\"decision\":\"comment\"}"}`))
+		_, _ = w.Write([]byte(`{"output_text":"{\"summary\":\"整体风险较低。\",\"risk_level\":\"low\",\"decision\":\"comment\"}","usage":{"input_tokens":17,"output_tokens":9}}`))
 	}))
 	defer server.Close()
 
@@ -88,5 +114,8 @@ func TestOpenAIReviewerReview(t *testing.T) {
 	}
 	if result.Summary != "整体风险较低。" || result.RiskLevel != "low" || result.Decision != "comment" {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Usage.InputTokens != 17 || result.Usage.OutputTokens != 9 {
+		t.Fatalf("unexpected usage: %+v", result.Usage)
 	}
 }

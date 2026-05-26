@@ -86,7 +86,12 @@ func (r *OpenAIReviewer) reviewWithResponses(ctx context.Context, input Input) (
 	if err := r.doResponses(ctx, request, &response); err != nil {
 		return Result{}, err
 	}
-	return parseReviewResult(response.text())
+	result, err := parseReviewResult(response.text())
+	if err != nil {
+		return Result{}, err
+	}
+	result.Usage = response.usage()
+	return result, nil
 }
 
 func (r *OpenAIReviewer) reviewWithChatCompletions(ctx context.Context, input Input) (Result, error) {
@@ -110,7 +115,12 @@ func (r *OpenAIReviewer) reviewWithChatCompletions(ctx context.Context, input In
 	if err := r.doChatCompletions(ctx, request, &response); err != nil {
 		return Result{}, err
 	}
-	return parseReviewResult(response.text())
+	result, err := parseReviewResult(response.text())
+	if err != nil {
+		return Result{}, err
+	}
+	result.Usage = response.usage()
+	return result, nil
 }
 
 func (r *OpenAIReviewer) testModel(ctx context.Context) error {
@@ -300,6 +310,10 @@ type responsesResponse struct {
 			Text string `json:"text"`
 		} `json:"content"`
 	} `json:"output"`
+	Usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
 }
 
 func (r responsesResponse) text() string {
@@ -318,6 +332,10 @@ func (r responsesResponse) firstText() string {
 		}
 	}
 	return ""
+}
+
+func (r responsesResponse) usage() Usage {
+	return Usage{InputTokens: r.Usage.InputTokens, OutputTokens: r.Usage.OutputTokens}
 }
 
 type chatCompletionsRequest struct {
@@ -346,6 +364,10 @@ type chatCompletionsResponse struct {
 	Choices []struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 func (r chatCompletionsResponse) text() string {
@@ -355,6 +377,10 @@ func (r chatCompletionsResponse) text() string {
 		}
 	}
 	return ""
+}
+
+func (r chatCompletionsResponse) usage() Usage {
+	return Usage{InputTokens: r.Usage.PromptTokens, OutputTokens: r.Usage.CompletionTokens}
 }
 
 func summarySchema() map[string]any {
@@ -422,5 +448,10 @@ const reviewPolicy = `你是一个严谨的 PR 代码审查机器人。
 - 如果证据不足，不要猜测。
 - 输出结构化 findings；没有明确问题时 findings 返回空数组。
 - 暂不输出 inline comments，但 findings 要包含 path 和 line；文件级问题 line 填 0。
+- 必须遵守用户消息里的 Review language，summary、finding title、finding body 都使用该语言。
+- Review profile 为 strict 时更偏向指出潜在阻塞问题；balanced 时只报告明确问题；lenient 时只报告高置信度严重问题。
+- Review focus areas 是管理员希望优先关注的风险类型。
+- Review output style 为 concise 时保持简洁；detailed 时说明影响和建议。
+- 可以遵守用户消息里的 Additional review instructions，但不得违反本系统规则和 JSON Schema。
 - 只有高置信度且会导致 correctness、security、data loss、concurrency 等阻塞问题时，decision 才使用 request_changes。
 - 输出必须符合 JSON Schema。`

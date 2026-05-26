@@ -23,13 +23,19 @@ button:disabled {
   opacity: 0.65;
 }
 
-input {
+input,
+select,
+textarea {
   border: 1px solid #cbd5e1;
   border-radius: 10px;
   box-sizing: border-box;
   font: inherit;
   padding: 10px 12px;
   width: 100%;
+}
+
+textarea {
+  resize: vertical;
 }
 
 label {
@@ -278,6 +284,10 @@ code {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.wideField {
+  grid-column: 1 / -1;
+}
+
 .checkbox {
   align-items: center;
   flex-direction: row;
@@ -297,18 +307,34 @@ code {
   border-top: 1px solid #e2e8f0;
 }
 
-.findingList {
+.findingList,
+.eventList {
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 14px 18px 18px;
 }
 
-.finding {
+.finding,
+.eventItem {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   padding: 14px;
+}
+
+.eventItem {
+  display: grid;
+  gap: 6px;
+}
+
+.eventItem span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.eventItem p {
+  margin: 0;
 }
 
 .findingTopline {
