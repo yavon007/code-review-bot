@@ -19,41 +19,55 @@ var (
 )
 
 type AppSettings struct {
-	GiteaBaseURL             string        `json:"gitea_base_url"`
-	GiteaToken               string        `json:"gitea_token,omitempty"`
-	GiteaWebhookSecret       string        `json:"gitea_webhook_secret,omitempty"`
-	BotName                  string        `json:"bot_name"`
-	OpenAIAPIKey             string        `json:"openai_api_key,omitempty"`
-	OpenAIBaseURL            string        `json:"openai_base_url"`
-	ReviewModel              string        `json:"review_model"`
-	ReviewMaxDiffBytes       int64         `json:"review_max_diff_bytes"`
-	ReviewExcludePaths       []string      `json:"review_exclude_paths"`
-	ReviewFailOnHigh         bool          `json:"review_fail_on_high"`
-	ReviewPostInlineComments bool          `json:"review_post_inline_comments"`
-	ReviewMaxFindings        int           `json:"review_max_findings"`
-	ReviewMaxAttempts        int           `json:"review_max_attempts"`
-	ReviewStaleTimeout       time.Duration `json:"-"`
-	ReviewStaleTimeoutText   string        `json:"review_stale_timeout"`
-	WorkerPollInterval       time.Duration `json:"-"`
-	WorkerPollIntervalText   string        `json:"worker_poll_interval"`
+	GiteaBaseURL                     string        `json:"gitea_base_url"`
+	GiteaToken                       string        `json:"gitea_token,omitempty"`
+	GiteaWebhookSecret               string        `json:"gitea_webhook_secret,omitempty"`
+	BotName                          string        `json:"bot_name"`
+	OpenAIAPIKey                     string        `json:"openai_api_key,omitempty"`
+	OpenAIBaseURL                    string        `json:"openai_base_url"`
+	ReviewModel                      string        `json:"review_model"`
+	ReviewLanguage                   string        `json:"review_language"`
+	ReviewProfile                    string        `json:"review_profile"`
+	ReviewFocusAreas                 []string      `json:"review_focus_areas"`
+	ReviewOutputStyle                string        `json:"review_output_style"`
+	ReviewExtraInstructions          string        `json:"review_extra_instructions"`
+	ReviewInputTokenPricePerMillion  float64       `json:"review_input_token_price_per_million"`
+	ReviewOutputTokenPricePerMillion float64       `json:"review_output_token_price_per_million"`
+	ReviewMaxDiffBytes               int64         `json:"review_max_diff_bytes"`
+	ReviewExcludePaths               []string      `json:"review_exclude_paths"`
+	ReviewFailOnHigh                 bool          `json:"review_fail_on_high"`
+	ReviewPostInlineComments         bool          `json:"review_post_inline_comments"`
+	ReviewMaxFindings                int           `json:"review_max_findings"`
+	ReviewMaxAttempts                int           `json:"review_max_attempts"`
+	ReviewStaleTimeout               time.Duration `json:"-"`
+	ReviewStaleTimeoutText           string        `json:"review_stale_timeout"`
+	WorkerPollInterval               time.Duration `json:"-"`
+	WorkerPollIntervalText           string        `json:"worker_poll_interval"`
 }
 
 type PublicSettings struct {
-	GiteaBaseURL             string   `json:"gitea_base_url"`
-	HasGiteaToken            bool     `json:"has_gitea_token"`
-	HasGiteaWebhookSecret    bool     `json:"has_gitea_webhook_secret"`
-	BotName                  string   `json:"bot_name"`
-	HasOpenAIAPIKey          bool     `json:"has_openai_api_key"`
-	OpenAIBaseURL            string   `json:"openai_base_url"`
-	ReviewModel              string   `json:"review_model"`
-	ReviewMaxDiffBytes       int64    `json:"review_max_diff_bytes"`
-	ReviewExcludePaths       []string `json:"review_exclude_paths"`
-	ReviewFailOnHigh         bool     `json:"review_fail_on_high"`
-	ReviewPostInlineComments bool     `json:"review_post_inline_comments"`
-	ReviewMaxFindings        int      `json:"review_max_findings"`
-	ReviewMaxAttempts        int      `json:"review_max_attempts"`
-	ReviewStaleTimeout       string   `json:"review_stale_timeout"`
-	WorkerPollInterval       string   `json:"worker_poll_interval"`
+	GiteaBaseURL                     string   `json:"gitea_base_url"`
+	HasGiteaToken                    bool     `json:"has_gitea_token"`
+	HasGiteaWebhookSecret            bool     `json:"has_gitea_webhook_secret"`
+	BotName                          string   `json:"bot_name"`
+	HasOpenAIAPIKey                  bool     `json:"has_openai_api_key"`
+	OpenAIBaseURL                    string   `json:"openai_base_url"`
+	ReviewModel                      string   `json:"review_model"`
+	ReviewLanguage                   string   `json:"review_language"`
+	ReviewProfile                    string   `json:"review_profile"`
+	ReviewFocusAreas                 []string `json:"review_focus_areas"`
+	ReviewOutputStyle                string   `json:"review_output_style"`
+	ReviewExtraInstructions          string   `json:"review_extra_instructions"`
+	ReviewInputTokenPricePerMillion  float64  `json:"review_input_token_price_per_million"`
+	ReviewOutputTokenPricePerMillion float64  `json:"review_output_token_price_per_million"`
+	ReviewMaxDiffBytes               int64    `json:"review_max_diff_bytes"`
+	ReviewExcludePaths               []string `json:"review_exclude_paths"`
+	ReviewFailOnHigh                 bool     `json:"review_fail_on_high"`
+	ReviewPostInlineComments         bool     `json:"review_post_inline_comments"`
+	ReviewMaxFindings                int      `json:"review_max_findings"`
+	ReviewMaxAttempts                int      `json:"review_max_attempts"`
+	ReviewStaleTimeout               string   `json:"review_stale_timeout"`
+	WorkerPollInterval               string   `json:"worker_poll_interval"`
 }
 
 type Store struct {
@@ -67,23 +81,30 @@ func NewStore(db *sql.DB, fallback AppSettings) *Store {
 
 func FromConfig(cfg config.Config) AppSettings {
 	return AppSettings{
-		GiteaBaseURL:             cfg.GiteaBaseURL,
-		GiteaToken:               cfg.GiteaToken,
-		GiteaWebhookSecret:       cfg.GiteaWebhookSecret,
-		BotName:                  cfg.BotName,
-		OpenAIAPIKey:             cfg.OpenAIAPIKey,
-		OpenAIBaseURL:            cfg.OpenAIBaseURL,
-		ReviewModel:              cfg.ReviewModel,
-		ReviewMaxDiffBytes:       cfg.ReviewMaxDiffBytes,
-		ReviewExcludePaths:       cfg.ReviewExcludePaths,
-		ReviewFailOnHigh:         cfg.ReviewFailOnHigh,
-		ReviewPostInlineComments: cfg.ReviewPostInlineComments,
-		ReviewMaxFindings:        cfg.ReviewMaxFindings,
-		ReviewMaxAttempts:        3,
-		ReviewStaleTimeout:       10 * time.Minute,
-		ReviewStaleTimeoutText:   (10 * time.Minute).String(),
-		WorkerPollInterval:       cfg.WorkerPollInterval,
-		WorkerPollIntervalText:   cfg.WorkerPollInterval.String(),
+		GiteaBaseURL:                     cfg.GiteaBaseURL,
+		GiteaToken:                       cfg.GiteaToken,
+		GiteaWebhookSecret:               cfg.GiteaWebhookSecret,
+		BotName:                          cfg.BotName,
+		OpenAIAPIKey:                     cfg.OpenAIAPIKey,
+		OpenAIBaseURL:                    cfg.OpenAIBaseURL,
+		ReviewModel:                      cfg.ReviewModel,
+		ReviewLanguage:                   "中文",
+		ReviewProfile:                    "balanced",
+		ReviewFocusAreas:                 []string{"correctness", "security", "data_loss", "concurrency", "test_gap"},
+		ReviewOutputStyle:                "detailed",
+		ReviewExtraInstructions:          "",
+		ReviewInputTokenPricePerMillion:  0,
+		ReviewOutputTokenPricePerMillion: 0,
+		ReviewMaxDiffBytes:               cfg.ReviewMaxDiffBytes,
+		ReviewExcludePaths:               cfg.ReviewExcludePaths,
+		ReviewFailOnHigh:                 cfg.ReviewFailOnHigh,
+		ReviewPostInlineComments:         cfg.ReviewPostInlineComments,
+		ReviewMaxFindings:                cfg.ReviewMaxFindings,
+		ReviewMaxAttempts:                3,
+		ReviewStaleTimeout:               10 * time.Minute,
+		ReviewStaleTimeoutText:           (10 * time.Minute).String(),
+		WorkerPollInterval:               cfg.WorkerPollInterval,
+		WorkerPollIntervalText:           cfg.WorkerPollInterval.String(),
 	}
 }
 
@@ -96,6 +117,25 @@ func (s AppSettings) Normalize() AppSettings {
 	}
 	if s.ReviewModel == "" {
 		s.ReviewModel = "gpt-4.1"
+	}
+	if strings.TrimSpace(s.ReviewLanguage) == "" {
+		s.ReviewLanguage = "中文"
+	}
+	if strings.TrimSpace(s.ReviewProfile) == "" {
+		s.ReviewProfile = "balanced"
+	}
+	if len(s.ReviewFocusAreas) == 0 {
+		s.ReviewFocusAreas = []string{"correctness", "security", "data_loss", "concurrency", "test_gap"}
+	}
+	if strings.TrimSpace(s.ReviewOutputStyle) == "" {
+		s.ReviewOutputStyle = "detailed"
+	}
+	s.ReviewExtraInstructions = strings.TrimSpace(s.ReviewExtraInstructions)
+	if s.ReviewInputTokenPricePerMillion < 0 {
+		s.ReviewInputTokenPricePerMillion = 0
+	}
+	if s.ReviewOutputTokenPricePerMillion < 0 {
+		s.ReviewOutputTokenPricePerMillion = 0
 	}
 	if s.ReviewMaxDiffBytes <= 0 {
 		s.ReviewMaxDiffBytes = 120000
@@ -136,21 +176,28 @@ func (s AppSettings) Normalize() AppSettings {
 func (s AppSettings) Public() PublicSettings {
 	s = s.Normalize()
 	return PublicSettings{
-		GiteaBaseURL:             s.GiteaBaseURL,
-		HasGiteaToken:            s.GiteaToken != "",
-		HasGiteaWebhookSecret:    s.GiteaWebhookSecret != "",
-		BotName:                  s.BotName,
-		HasOpenAIAPIKey:          s.OpenAIAPIKey != "",
-		OpenAIBaseURL:            s.OpenAIBaseURL,
-		ReviewModel:              s.ReviewModel,
-		ReviewMaxDiffBytes:       s.ReviewMaxDiffBytes,
-		ReviewExcludePaths:       s.ReviewExcludePaths,
-		ReviewFailOnHigh:         s.ReviewFailOnHigh,
-		ReviewPostInlineComments: s.ReviewPostInlineComments,
-		ReviewMaxFindings:        s.ReviewMaxFindings,
-		ReviewMaxAttempts:        s.ReviewMaxAttempts,
-		ReviewStaleTimeout:       s.ReviewStaleTimeout.String(),
-		WorkerPollInterval:       s.WorkerPollInterval.String(),
+		GiteaBaseURL:                     s.GiteaBaseURL,
+		HasGiteaToken:                    s.GiteaToken != "",
+		HasGiteaWebhookSecret:            s.GiteaWebhookSecret != "",
+		BotName:                          s.BotName,
+		HasOpenAIAPIKey:                  s.OpenAIAPIKey != "",
+		OpenAIBaseURL:                    s.OpenAIBaseURL,
+		ReviewModel:                      s.ReviewModel,
+		ReviewLanguage:                   s.ReviewLanguage,
+		ReviewProfile:                    s.ReviewProfile,
+		ReviewFocusAreas:                 s.ReviewFocusAreas,
+		ReviewOutputStyle:                s.ReviewOutputStyle,
+		ReviewExtraInstructions:          s.ReviewExtraInstructions,
+		ReviewInputTokenPricePerMillion:  s.ReviewInputTokenPricePerMillion,
+		ReviewOutputTokenPricePerMillion: s.ReviewOutputTokenPricePerMillion,
+		ReviewMaxDiffBytes:               s.ReviewMaxDiffBytes,
+		ReviewExcludePaths:               s.ReviewExcludePaths,
+		ReviewFailOnHigh:                 s.ReviewFailOnHigh,
+		ReviewPostInlineComments:         s.ReviewPostInlineComments,
+		ReviewMaxFindings:                s.ReviewMaxFindings,
+		ReviewMaxAttempts:                s.ReviewMaxAttempts,
+		ReviewStaleTimeout:               s.ReviewStaleTimeout.String(),
+		WorkerPollInterval:               s.WorkerPollInterval.String(),
 	}
 }
 
@@ -300,21 +347,28 @@ func upsertSettings(ctx context.Context, db execer, settings AppSettings, preser
 
 func settingValues(settings AppSettings) map[string]string {
 	return map[string]string{
-		"gitea_base_url":              settings.GiteaBaseURL,
-		"gitea_token":                 settings.GiteaToken,
-		"gitea_webhook_secret":        settings.GiteaWebhookSecret,
-		"bot_name":                    settings.BotName,
-		"openai_api_key":              settings.OpenAIAPIKey,
-		"openai_base_url":             settings.OpenAIBaseURL,
-		"review_model":                settings.ReviewModel,
-		"review_max_diff_bytes":       strconv.FormatInt(settings.ReviewMaxDiffBytes, 10),
-		"review_exclude_paths":        strings.Join(settings.ReviewExcludePaths, ","),
-		"review_fail_on_high":         strconv.FormatBool(settings.ReviewFailOnHigh),
-		"review_post_inline_comments": strconv.FormatBool(settings.ReviewPostInlineComments),
-		"review_max_findings":         strconv.Itoa(settings.ReviewMaxFindings),
-		"review_max_attempts":         strconv.Itoa(settings.ReviewMaxAttempts),
-		"review_stale_timeout":        settings.ReviewStaleTimeout.String(),
-		"worker_poll_interval":        settings.WorkerPollInterval.String(),
+		"gitea_base_url":                        settings.GiteaBaseURL,
+		"gitea_token":                           settings.GiteaToken,
+		"gitea_webhook_secret":                  settings.GiteaWebhookSecret,
+		"bot_name":                              settings.BotName,
+		"openai_api_key":                        settings.OpenAIAPIKey,
+		"openai_base_url":                       settings.OpenAIBaseURL,
+		"review_model":                          settings.ReviewModel,
+		"review_language":                       settings.ReviewLanguage,
+		"review_profile":                        settings.ReviewProfile,
+		"review_focus_areas":                    strings.Join(settings.ReviewFocusAreas, ","),
+		"review_output_style":                   settings.ReviewOutputStyle,
+		"review_extra_instructions":             settings.ReviewExtraInstructions,
+		"review_input_token_price_per_million":  strconv.FormatFloat(settings.ReviewInputTokenPricePerMillion, 'f', -1, 64),
+		"review_output_token_price_per_million": strconv.FormatFloat(settings.ReviewOutputTokenPricePerMillion, 'f', -1, 64),
+		"review_max_diff_bytes":                 strconv.FormatInt(settings.ReviewMaxDiffBytes, 10),
+		"review_exclude_paths":                  strings.Join(settings.ReviewExcludePaths, ","),
+		"review_fail_on_high":                   strconv.FormatBool(settings.ReviewFailOnHigh),
+		"review_post_inline_comments":           strconv.FormatBool(settings.ReviewPostInlineComments),
+		"review_max_findings":                   strconv.Itoa(settings.ReviewMaxFindings),
+		"review_max_attempts":                   strconv.Itoa(settings.ReviewMaxAttempts),
+		"review_stale_timeout":                  settings.ReviewStaleTimeout.String(),
+		"worker_poll_interval":                  settings.WorkerPollInterval.String(),
 	}
 }
 
@@ -326,6 +380,21 @@ func applyValues(settings *AppSettings, values map[string]string) {
 	settings.OpenAIAPIKey = valueOrDefault(values, "openai_api_key", settings.OpenAIAPIKey)
 	settings.OpenAIBaseURL = valueOrDefault(values, "openai_base_url", settings.OpenAIBaseURL)
 	settings.ReviewModel = valueOrDefault(values, "review_model", settings.ReviewModel)
+	settings.ReviewLanguage = valueOrDefault(values, "review_language", settings.ReviewLanguage)
+	settings.ReviewProfile = valueOrDefault(values, "review_profile", settings.ReviewProfile)
+	settings.ReviewFocusAreas = splitList(valueOrDefault(values, "review_focus_areas", strings.Join(settings.ReviewFocusAreas, ",")))
+	settings.ReviewOutputStyle = valueOrDefault(values, "review_output_style", settings.ReviewOutputStyle)
+	settings.ReviewExtraInstructions = valueOrDefault(values, "review_extra_instructions", settings.ReviewExtraInstructions)
+	if value, ok := values["review_input_token_price_per_million"]; ok {
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+			settings.ReviewInputTokenPricePerMillion = parsed
+		}
+	}
+	if value, ok := values["review_output_token_price_per_million"]; ok {
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+			settings.ReviewOutputTokenPricePerMillion = parsed
+		}
+	}
 	settings.ReviewExcludePaths = splitList(valueOrDefault(values, "review_exclude_paths", strings.Join(settings.ReviewExcludePaths, ",")))
 	settings.ReviewStaleTimeoutText = valueOrDefault(values, "review_stale_timeout", settings.ReviewStaleTimeout.String())
 	settings.WorkerPollIntervalText = valueOrDefault(values, "worker_poll_interval", settings.WorkerPollInterval.String())

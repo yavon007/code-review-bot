@@ -10,10 +10,15 @@ import (
 )
 
 type Input struct {
-	Job           jobs.Job
-	ChangedFiles  []gitea.ChangedFile
-	Diff          string
-	DiffTruncated bool
+	Job                     jobs.Job
+	ChangedFiles            []gitea.ChangedFile
+	Diff                    string
+	DiffTruncated           bool
+	Language                string
+	ReviewProfile           string
+	ReviewFocusAreas        []string
+	ReviewOutputStyle       string
+	ReviewExtraInstructions string
 }
 
 type Result struct {
@@ -21,6 +26,12 @@ type Result struct {
 	RiskLevel string    `json:"risk_level"`
 	Decision  string    `json:"decision"`
 	Findings  []Finding `json:"findings"`
+	Usage     Usage     `json:"-"`
+}
+
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
 }
 
 type Finding struct {
@@ -49,6 +60,14 @@ func (r MockReviewer) Review(ctx context.Context, input Input) (Result, error) {
 	}, nil
 }
 
+func reviewSettingOrDefault(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 func buildPrompt(input Input) string {
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("Repository: %s\n", input.Job.RepoFullName))
@@ -58,7 +77,22 @@ func buildPrompt(input Input) string {
 	if input.DiffTruncated {
 		builder.WriteString("Diff truncated: true\n")
 	}
+	language := strings.TrimSpace(input.Language)
+	if language == "" {
+		language = "中文"
+	}
+	builder.WriteString(fmt.Sprintf("Review language: %s\n", language))
+	builder.WriteString(fmt.Sprintf("Review profile: %s\n", reviewSettingOrDefault(input.ReviewProfile, "balanced")))
+	builder.WriteString(fmt.Sprintf("Review output style: %s\n", reviewSettingOrDefault(input.ReviewOutputStyle, "detailed")))
+	if len(input.ReviewFocusAreas) > 0 {
+		builder.WriteString(fmt.Sprintf("Review focus areas: %s\n", strings.Join(input.ReviewFocusAreas, ", ")))
+	}
 	builder.WriteString("Review output: include concrete findings when there are correctness, security, data loss, concurrency, performance, or test gap issues. Use line=0 for file-level findings. Use decision=request_changes only for high-confidence blocking issues.\n")
+	if extraInstructions := strings.TrimSpace(input.ReviewExtraInstructions); extraInstructions != "" {
+		builder.WriteString("\nAdditional review instructions from the administrator:\n")
+		builder.WriteString(extraInstructions)
+		builder.WriteString("\n")
+	}
 	builder.WriteString("\nChanged files:\n")
 	for _, file := range input.ChangedFiles {
 		builder.WriteString(fmt.Sprintf("- %s status=%s additions=%d deletions=%d changes=%d\n", file.Filename, file.Status, file.Additions, file.Deletions, file.Changes))

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -66,6 +67,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/deliveries", s.handleListDeliveries)
 	s.mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	s.mux.HandleFunc("GET /api/jobs/{id}/findings", s.handleListFindings)
+	s.mux.HandleFunc("GET /api/jobs/{id}/events", s.handleListJobEvents)
 	s.mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
 }
 
@@ -340,6 +342,7 @@ func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordJobEvent(r.Context(), job.ID, "queued", "Webhook 已创建审查任务")
 	s.log.Info("queued review job", "job_id", job.ID, "repo", job.RepoFullName, "pr", job.PRNumber, "head_sha", job.HeadSHA)
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "queued", "job": job})
 }
@@ -359,6 +362,12 @@ func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 func (s *Server) recordDelivery(r *http.Request, input jobs.WebhookDeliveryInput) {
 	if err := s.jobs.RecordDelivery(r.Context(), input); err != nil {
 		s.log.Warn("failed to record webhook delivery", "delivery_id", input.DeliveryID, "status", input.Status, "error", err)
+	}
+}
+
+func (s *Server) recordJobEvent(ctx context.Context, jobID int64, eventType string, message string) {
+	if err := s.jobs.RecordJobEvent(ctx, jobID, eventType, message); err != nil {
+		s.log.Warn("failed to record job event", "job_id", jobID, "event", eventType, "error", err)
 	}
 }
 
@@ -404,6 +413,22 @@ func (s *Server) handleListFindings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"findings": findings})
+}
+
+func (s *Server) handleListJobEvents(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAuth(w, r); !ok {
+		return
+	}
+	id, ok := parseJobID(w, r)
+	if !ok {
+		return
+	}
+	events, err := s.jobs.ListJobEvents(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list job events")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
 func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
