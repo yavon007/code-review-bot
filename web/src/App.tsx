@@ -538,6 +538,7 @@ function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) 
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [isLoadingFindings, setIsLoadingFindings] = useState(false);
   const [findingsError, setFindingsError] = useState<string | null>(null);
+  const [eventsError, setEventsError] = useState<string | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -545,28 +546,41 @@ function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) 
     async function loadFindings() {
       setIsLoadingFindings(true);
       setFindingsError(null);
+      setEventsError(null);
+      setEvents([]);
       try {
         const response = await fetch(`/api/jobs/${job.id}/findings`);
         if (!response.ok) {
           throw new Error(`请求失败：${response.status}`);
         }
         const data = (await response.json()) as FindingsResponse;
+        if (isActive) {
+          setFindings(data.findings ?? []);
+        }
+      } catch (err) {
+        if (isActive) {
+          setFindings([]);
+          setFindingsError(err instanceof Error ? err.message : '加载 findings 失败');
+        }
+      } finally {
+        if (isActive) {
+          setIsLoadingFindings(false);
+        }
+      }
+
+      try {
         const eventsResponse = await fetch(`/api/jobs/${job.id}/events`);
         if (!eventsResponse.ok) {
           throw new Error(`请求失败：${eventsResponse.status}`);
         }
         const eventsData = (await eventsResponse.json()) as EventsResponse;
         if (isActive) {
-          setFindings(data.findings ?? []);
           setEvents(eventsData.events ?? []);
         }
       } catch (err) {
         if (isActive) {
-          setFindingsError(err instanceof Error ? err.message : '加载 findings 失败');
-        }
-      } finally {
-        if (isActive) {
-          setIsLoadingFindings(false);
+          setEvents([]);
+          setEventsError(err instanceof Error ? err.message : '加载 timeline 失败');
         }
       }
     }
@@ -599,6 +613,7 @@ function JobDetail({ job, onRetry }: { job: Job; onRetry: (job: Job) => void }) 
 
       <section className="findingsSection">
         <div className="panelHeader compact"><h2>执行时间线</h2><span>{events.length} 条</span></div>
+        {eventsError ? <div className="alert">{eventsError}</div> : null}
         {events.length === 0 ? <p className="empty">暂无执行事件</p> : null}
         <div className="eventList">
           {events.map((event) => (

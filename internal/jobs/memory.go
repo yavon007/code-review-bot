@@ -478,6 +478,9 @@ func (s *MemoryStore) Retry(ctx context.Context, id int64) (Job, error) {
 	job.AttemptCount = 0
 	job.ErrorMessage = ""
 	job.Summary = ""
+	job.InputTokens = 0
+	job.OutputTokens = 0
+	job.EstimatedCost = 0
 	s.jobs[id] = job
 	delete(s.runningSince, id)
 	delete(s.runningWorker, id)

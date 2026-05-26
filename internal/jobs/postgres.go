@@ -414,9 +414,10 @@ func (s *PostgresStore) Retry(ctx context.Context, id int64) (Job, error) {
 	var job Job
 	err := s.db.QueryRowContext(ctx, `
 		update review_jobs
-		set status = $1, attempt_count = 0, error_message = null, summary = null, started_at = null, heartbeat_at = null, worker_id = null,
-			finished_at = null, queued_at = now(), status_sync_pending = false, status_sync_error = null,
-			status_sync_attempt_count = 0, next_status_sync_at = null, status_sync_worker_id = null, status_sync_started_at = null
+		set status = $1, attempt_count = 0, error_message = null, summary = null, input_tokens = 0, output_tokens = 0, estimated_cost = 0,
+			started_at = null, heartbeat_at = null, worker_id = null, finished_at = null, queued_at = now(),
+			status_sync_pending = false, status_sync_error = null, status_sync_attempt_count = 0,
+			next_status_sync_at = null, status_sync_worker_id = null, status_sync_started_at = null
 		where id = $2 and status = $3 and (status_sync_worker_id is null or status_sync_started_at < now() - interval '2 minutes')
 		returning id, coalesce(delivery_id, ''), event_name, action, repo_full_name, owner_name, repo_name,
 			pr_number, head_sha, base_sha, sender, status, attempt_count, coalesce(error_message, ''),

@@ -160,14 +160,12 @@ func (w *Worker) processOne(ctx context.Context) {
 		return
 	}
 	w.recordJobEvent(ctx, job.ID, "model_reviewed", fmt.Sprintf("模型审查完成，返回 %d 条 finding", len(result.Findings)))
-	if result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0 {
-		estimatedCost := estimateReviewCost(result.Usage, appSettings)
-		if err := w.store.SaveReviewUsage(ctx, job.ID, w.workerID, result.Usage.InputTokens, result.Usage.OutputTokens, estimatedCost); err != nil {
-			w.fail(ctx, giteaClient, job, jobs.StatusErrored, fmt.Errorf("save review usage: %w", err))
-			return
-		}
-		w.recordJobEvent(ctx, job.ID, "usage_saved", fmt.Sprintf("已记录 token 用量：input=%d output=%d", result.Usage.InputTokens, result.Usage.OutputTokens))
+	estimatedCost := estimateReviewCost(result.Usage, appSettings)
+	if err := w.store.SaveReviewUsage(ctx, job.ID, w.workerID, result.Usage.InputTokens, result.Usage.OutputTokens, estimatedCost); err != nil {
+		w.fail(ctx, giteaClient, job, jobs.StatusErrored, fmt.Errorf("save review usage: %w", err))
+		return
 	}
+	w.recordJobEvent(ctx, job.ID, "usage_saved", fmt.Sprintf("已记录 token 用量：input=%d output=%d", result.Usage.InputTokens, result.Usage.OutputTokens))
 
 	result.Findings = limitFindings(result.Findings, appSettings.ReviewMaxFindings)
 	findings := reviewFindings(job.ID, result.Findings)
